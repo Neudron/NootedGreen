@@ -1575,6 +1575,12 @@ private:
 	static void programPipeScaler(void *that,void *param_1);
 	mach_vm_address_t oprogramPipeScaler {};
 
+	// V400: AppleIntelScaler::setupPipeScaler(AppleIntelDisplayPath *, CRTCParams *)
+	// Read-only logging hook — dumps pipe scaler fields after Apple computes them
+	// (PIPE_SRCSZ vs PS_PS_WIN_SZ tells us whether downscaling is happening).
+	static void setupPipeScaler(void *that, void *path, void *params);
+	mach_vm_address_t osetupPipeScaler {};
+
 	static void  disablePowerWellPG(void *that,uint param_1);
 	mach_vm_address_t odisablePowerWellPG {};
 	

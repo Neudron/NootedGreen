@@ -380,8 +380,31 @@ def _unwrap_pointer(dt):
     return dt
 
 
+def _better_struct(existing, candidate):
+    """Return True if `candidate` is a more useful definition than `existing`.
+
+    Multiple categories in the DTM can contain a struct with the same name —
+    e.g. `/Demangler/CRTCParams` (1-byte placeholder Ghidra auto-creates when
+    it sees a function signature) AND `/ghidra_seed_structs.h/CRTCParams` (the
+    real 0xF0-byte version from our seed file). Prefer the one with the most
+    defined components; on ties, prefer the larger size.
+    """
+    if existing is None:
+        return True
+    ec = existing.getNumDefinedComponents()
+    cc = candidate.getNumDefinedComponents()
+    if cc != ec:
+        return cc > ec
+    return candidate.getLength() > existing.getLength()
+
+
 def collect_all_types(program):
-    """Return dicts: structs{name->dt}, unions{name->dt}, enums{name->dt}."""
+    """Return dicts: structs{name->dt}, unions{name->dt}, enums{name->dt}.
+
+    Deduplicates by name across DTM categories: when multiple structs share a
+    name (e.g. a Demangler 1-byte placeholder vs our parsed seed-file version),
+    keep the one with the most defined components / largest size.
+    """
     dtm = program.getDataTypeManager()
     structs, unions, enums = {}, {}, {}
 
@@ -392,21 +415,27 @@ def collect_all_types(program):
     for dt in all_dt_list:
         if _is_builtin(dt):
             continue
-        if isinstance(dt, Structure) and dt.getName() not in structs:
-            structs[dt.getName()] = dt
-        elif isinstance(dt, Union) and dt.getName() not in unions:
-            unions[dt.getName()] = dt
-        elif isinstance(dt, Enum) and dt.getName() not in enums:
-            enums[dt.getName()] = dt
+        if isinstance(dt, Structure):
+            n = dt.getName()
+            if _better_struct(structs.get(n), dt):
+                structs[n] = dt
+        elif isinstance(dt, Union):
+            unions.setdefault(dt.getName(), dt)
+        elif isinstance(dt, Enum):
+            enums.setdefault(dt.getName(), dt)
 
-    # 2. Function signatures and locals
+    # 2. Function signatures and locals — but only register candidates we
+    # haven't already collected via the DTM scan above. (setdefault used to
+    # win over our DTM choice with a Demangler placeholder; now we just skip.)
     fm = program.getFunctionManager()
     for fn in fm.getFunctions(True):
         for candidate in ([fn.getReturnType()]
                           + [p.getDataType() for p in fn.getParameters()]):
             base = _unwrap_pointer(candidate)
             if isinstance(base, Structure) and not _is_builtin(base):
-                structs.setdefault(base.getName(), base)
+                n = base.getName()
+                if n not in structs and _better_struct(None, base):
+                    structs[n] = base
             elif isinstance(base, Union) and not _is_builtin(base):
                 unions.setdefault(base.getName(), base)
             elif isinstance(base, Enum) and not _is_builtin(base):
@@ -415,7 +444,9 @@ def collect_all_types(program):
             for var in fn.getAllVariables():
                 base = _unwrap_pointer(var.getDataType())
                 if isinstance(base, Structure) and not _is_builtin(base):
-                    structs.setdefault(base.getName(), base)
+                    n = base.getName()
+                    if n not in structs:
+                        structs[n] = base
         except Exception:
             pass
 
@@ -517,12 +548,15 @@ def main():
 
     emitted = set()
 
-    # Enums first (no dependencies)
+    # Enums first (no dependencies). Skip preprocessor-define noise.
     if enums:
-        body += "// ---- Enums ----\n\n"
-        for name in sorted(enums):
-            emitted.add(name)
-            body += emit_enum(enums[name]) + "\n"
+        kept = [n for n in sorted(enums)
+                if not any(n.startswith(pfx) for pfx in SKIP_ENUM_PREFIXES)]
+        if kept:
+            body += "// ---- Enums ----\n\n"
+            for name in kept:
+                emitted.add(name)
+                body += emit_enum(enums[name]) + "\n"
 
     # Unions
     if unions:

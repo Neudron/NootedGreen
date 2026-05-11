@@ -476,6 +476,10 @@ bool Gen11::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 			{"__ZN16AppleIntelScaler13disableScalerEb",disableScaler, this->odisableScaler},
 			{"__ZN15AppleIntelPlane11enablePlaneEb",enablePlane, this->oenablePlane},
 			{"__ZN16AppleIntelScaler17programPipeScalerEP21AppleIntelDisplayPath",programPipeScaler, this->oprogramPipeScaler},
+			// V400: read-only logger for setupPipeScaler. Confirms whether Apple's
+			// pipe scaler is downscaling (PIPE_SRCSZ vs PS_PS_WIN_SZ mismatch) — if
+			// yes, that's a direct cause of the fragmented/repeated scanout.
+			{"__ZN16AppleIntelScaler15setupPipeScalerEP21AppleIntelDisplayPathP10CRTCParams", setupPipeScaler, this->osetupPipeScaler},
 			{"__ZN15AppleIntelPlane19updateRegisterCacheEv",AppleIntelPlaneupdateRegisterCache, this->oAppleIntelPlaneupdateRegisterCache},
 			{"__ZN16AppleIntelScaler19updateRegisterCacheEv",AppleIntelScalerupdateRegisterCache, this->oAppleIntelScalerupdateRegisterCache},
 			{"__ZN19AppleIntelPowerWell20disableDisplayEngineEv",disableDisplayEngine, this->odisableDisplayEngine},
@@ -5946,6 +5950,48 @@ void Gen11::programPipeScaler(void *that,void *param_1)
 {
 	getMember<void *>(that, 0x28) = ccont;
 	FunctionCast(programPipeScaler, callback->oprogramPipeScaler)(that,param_1);
+}
+
+// V400: AppleIntelScaler::setupPipeScaler(AppleIntelDisplayPath *, CRTCParams *)
+// READ-ONLY diagnostic. Calls original, then dumps the pipe-scaler-related fields
+// Apple wrote into CRTCParams. Goal: confirm whether the pipe scaler is downscaling
+// (PIPE_SRCSZ != PS_PS_WIN_SZ) — that would directly explain the fragmented/
+// repeated scanout pattern seen on this RPL-P panel without DSC.
+//
+// Gated on !isRealTGL because real TGL programs the scaler natively and we don't
+// want diagnostic spam there.
+void Gen11::setupPipeScaler(void *that, void *path, void *params)
+{
+	// Apple's setupPipeScaler also needs ccont fixup (same as programPipeScaler),
+	// per the V204 pattern — without it the original may crash on this=NULL ccont.
+	getMember<void *>(that, 0x28) = ccont;
+	FunctionCast(setupPipeScaler, callback->osetupPipeScaler)(that, path, params);
+
+	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || params == nullptr)
+		return;
+
+	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
+	static int v400Count = 0;
+	if (v400Count >= 12) return;
+	++v400Count;
+
+	// PIPE_SRCSZ encoding (Intel display spec): (width-1) in low 16 bits,
+	// (height-1) in high 16 bits. PS_PS_WIN_SZ encoding (Apple internal) appears
+	// to use the same width/height-1 packing per the disasm of setupPipeScaler.
+	const uint32_t src_w = (p->PIPE_SRCSZ & 0xFFFF) + 1;
+	const uint32_t src_h = ((p->PIPE_SRCSZ >> 16) & 0xFFFF) + 1;
+	const uint32_t win_w = (p->PS_PS_WIN_SZ & 0xFFFF) + 1;
+	const uint32_t win_h = ((p->PS_PS_WIN_SZ >> 16) & 0xFFFF) + 1;
+	const bool downscale = (win_w != src_w) || (win_h != src_h);
+	SYSLOG("ngreen", "V400[%d]: setupPipeScaler post-call CRTCParams: "
+	       "SRC=%ux%u (PIPE_SRCSZ=0x%x) WIN=%ux%u (PS_PS_WIN_SZ=0x%x) "
+	       "WIN_POS=0x%x SEAM_EXCESS=0x%x HPHASE=0x%x HTOTAL=0x%x VTOTAL=0x%x "
+	       "TRANS_CONF=0x%x %s",
+	       v400Count, src_w, src_h, p->PIPE_SRCSZ,
+	       win_w, win_h, p->PS_PS_WIN_SZ,
+	       p->PS_PS_WIN_POS, p->PIPE_SEAM_EXCESS, p->PS_HPHASE,
+	       p->TRANS_HTOTAL, p->TRANS_VTOTAL, p->TRANS_CONF,
+	       downscale ? "*** DOWNSCALE DETECTED ***" : "(1:1 no scale)");
 }
 
 void Gen11::AppleIntelScalerupdateRegisterCache(void *that)

@@ -59,7 +59,12 @@ typedef struct CRTCParams {
     uint32_t TRANS_VSYNC;          /* +0x24 */
     uint32_t PIPE_SRCSZ;           /* +0x28 */
     uint32_t TRANS_CONF;           /* +0x2C  (V97C aligns to live HW) */
-    uint8_t  _pad_0030[0x58];      /* +0x30..+0x87  TBD: identify via SetupDPSSTTimings / setupPipeWatermarks */
+    uint8_t  _pad_0030[0x18];      /* +0x30..+0x47  TBD (setupPipeScaler reads [+0x30] as ecx) */
+    uint32_t PS_PS_WIN_POS;        /* +0x48  (setupPipeScaler: pipe scaler window position) */
+    uint32_t PS_PS_WIN_SZ;         /* +0x4C  (setupPipeScaler: pipe scaler window size) */
+    uint32_t PIPE_SEAM_EXCESS;     /* +0x50  (setupPipeScaler: dual-pipe seam join offset) */
+    uint32_t PS_HPHASE;            /* +0x54  (setupPipeScaler: horizontal phase) */
+    uint8_t  _pad_0058[0x30];      /* +0x58..+0x87  TBD: setupPipeWatermarks / SetupDPSSTTimings fields */
     uint32_t PPS_0;                /* +0x88 */
     uint32_t PPS_1;                /* +0x8C */
     uint32_t PPS_2;                /* +0x90 */
@@ -78,23 +83,23 @@ typedef struct CRTCParams {
 } CRTCParams;
 
 /* ---------------------------------------------------------------------------
- * PLANEPARAMS — friend removed this from his Ghidra export; rebuild from
- * paramsSurfCompare(CRTCParams *, CRTCParams *, PLANEPARAMS *, PLANEPARAMS *).
- * Offsets below are educated guesses based on Display 12 PLANE_* register
- * order in i915 reg.h; verify by examining paramsSurfCompare disasm.
+ * PLANEPARAMS — verified from paramsSurfCompare disasm. Apple's internal
+ * representation, NOT the i915 PLANE_CTL register layout. paramsSurfCompare
+ * directly reads:
+ *   [+0x00] PLANE_CTL    (tiling field at bits[27:23], mask 0xF800000)
+ *   [+0x18] PLANE_STRIDE
+ *   [+0x20] PLANE_SURF
+ * Other offsets between these are unknown — leave padded until further
+ * disasm reveals them (likely candidates: PLANE_POS, PLANE_SIZE, PLANE_OFFSET,
+ * PLANE_COLOR_CTL written by setupPlane, but offsets unverified).
  * ------------------------------------------------------------------------- */
 typedef struct PLANEPARAMS {
-    uint32_t PLANE_CTL;            /* +0x00 */
-    uint32_t PLANE_STRIDE;         /* +0x04 */
-    uint32_t PLANE_POS;            /* +0x08 */
-    uint32_t PLANE_SIZE;           /* +0x0C */
-    uint32_t PLANE_KEYVAL;         /* +0x10 */
-    uint32_t PLANE_KEYMSK;         /* +0x14 */
-    uint32_t PLANE_OFFSET;         /* +0x18 */
-    uint32_t PLANE_COLOR_CTL;      /* +0x1C */
-    uint32_t PLANE_SURF;           /* +0x20  TBD: verify */
-    uint32_t PLANE_AUX_DIST;       /* +0x24  TBD: verify */
-    uint32_t PLANE_AUX_OFFSET;     /* +0x28  TBD: verify */
+    uint32_t PLANE_CTL;            /* +0x00  (tiling bits[27:23] = 0xF800000) */
+    uint8_t  _pad_0004[0x14];      /* +0x04..+0x17  TBD */
+    uint32_t PLANE_STRIDE;         /* +0x18 */
+    uint8_t  _pad_001C[0x4];       /* +0x1C..+0x1F  TBD */
+    uint32_t PLANE_SURF;           /* +0x20 */
+    uint8_t  _pad_0024[0x8];       /* +0x24..+0x2B  TBD (struct size assumed 0x2C; may extend) */
 } PLANEPARAMS;
 
 /* ---------------------------------------------------------------------------

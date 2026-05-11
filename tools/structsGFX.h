@@ -6,10 +6,10 @@
 //  analyzed AppleIntelTGLGraphicsFramebuffer.kext. Do not edit by hand — re-run
 //  the script after updating struct definitions in Ghidra.
 //
-//  Source program: AppleIntelTGLGraphics
-//  Generated: 2026-05-11T01:37:36.152000
+//  Source program: structsGFX.h
+//  Generated: 2026-05-11T15:44:41.758000
 //
-//  Populated structs: 1  |  Stubs: 7  |  Enums: 6
+//  Populated structs: 6  |  Stubs: 2  |  Enums: 2
 
 #ifndef AppleIntelParams_hpp
 #define AppleIntelParams_hpp
@@ -18,35 +18,9 @@
 
 namespace AppleIntel {
 
-// ---- Enums ----
-
-enum class define_BSD : uint32_t {
-    BSD = 0x309BF,
-};
-
-enum class define__FORTIFY_SOURCE : uint8_t {
-    _FORTIFY_SOURCE = 0x0,
-};
-
-enum class define__INTEGRAL_MAX_BITS : uint8_t {
-    _INTEGRAL_MAX_BITS = 0x20,
-};
-
-enum class define__LARGEFILE64_SOURCE : uint8_t {
-    _LARGEFILE64_SOURCE = 0x0,
-};
-
-enum class define__POSIX_C_SOURCE : uint16_t {
-    _POSIX_C_SOURCE = 0x76C,
-};
-
-enum class define___x86_64__ : uint8_t {
-    __x86_64__ = 0x1,
-};
-
 // ---- Structs (fields identified) ----
 
-// struct CRTCParams -- 0x30 bytes, 12 components
+// struct CRTCParams -- 0xF0 bytes, 33 components
 struct CRTCParams {
     uint32_t       TRANS_CLK_SEL; // +0x0
     uint32_t       TRANS_DDI_FUNC_CTL; // +0x4
@@ -60,8 +34,29 @@ struct CRTCParams {
     uint32_t       TRANS_VSYNC; // +0x24
     uint32_t       PIPE_SRCSZ; // +0x28
     uint32_t       TRANS_CONF; // +0x2C
+    uint8_t        _pad_0030[24]; // +0x30
+    uint32_t       PS_PS_WIN_POS; // +0x48
+    uint32_t       PS_PS_WIN_SZ; // +0x4C
+    uint32_t       PIPE_SEAM_EXCESS; // +0x50
+    uint32_t       PS_HPHASE; // +0x54
+    uint8_t        _pad_0058[48]; // +0x58
+    uint32_t       PPS_0; // +0x88
+    uint32_t       PPS_1; // +0x8C
+    uint32_t       PPS_2; // +0x90
+    uint32_t       PPS_3; // +0x94
+    uint32_t       PPS_4; // +0x98
+    uint32_t       PPS_5; // +0x9C
+    uint32_t       PPS_6; // +0xA0
+    uint32_t       PPS_7; // +0xA4
+    uint32_t       PPS_8; // +0xA8
+    uint32_t       PPS_9; // +0xAC
+    uint32_t       PPS_10; // +0xB0
+    uint32_t       PPS_16; // +0xB4
+    uint8_t        _pad_00B8[48]; // +0xB8
+    uint32_t       DSC_ENGINE_SEL; // +0xE8
+    uint32_t       DSC_JOINER_CTL; // +0xEC
 };
-static_assert(sizeof(CRTCParams) == 0x30, "CRTCParams size");
+static_assert(sizeof(CRTCParams) == 0xF0, "CRTCParams size");
 static_assert(__builtin_offsetof(CRTCParams, TRANS_CLK_SEL) == 0x0, "CRTCParams.TRANS_CLK_SEL");
 static_assert(__builtin_offsetof(CRTCParams, TRANS_DDI_FUNC_CTL) == 0x4, "CRTCParams.TRANS_DDI_FUNC_CTL");
 static_assert(__builtin_offsetof(CRTCParams, TRANS_DDI_FUNC_CTL2) == 0x8, "CRTCParams.TRANS_DDI_FUNC_CTL2");
@@ -74,28 +69,72 @@ static_assert(__builtin_offsetof(CRTCParams, TRANS_VBLANK) == 0x20, "CRTCParams.
 static_assert(__builtin_offsetof(CRTCParams, TRANS_VSYNC) == 0x24, "CRTCParams.TRANS_VSYNC");
 static_assert(__builtin_offsetof(CRTCParams, PIPE_SRCSZ) == 0x28, "CRTCParams.PIPE_SRCSZ");
 static_assert(__builtin_offsetof(CRTCParams, TRANS_CONF) == 0x2C, "CRTCParams.TRANS_CONF");
+static_assert(__builtin_offsetof(CRTCParams, PS_PS_WIN_POS) == 0x48, "CRTCParams.PS_PS_WIN_POS");
+static_assert(__builtin_offsetof(CRTCParams, PS_PS_WIN_SZ) == 0x4C, "CRTCParams.PS_PS_WIN_SZ");
+static_assert(__builtin_offsetof(CRTCParams, PIPE_SEAM_EXCESS) == 0x50, "CRTCParams.PIPE_SEAM_EXCESS");
+static_assert(__builtin_offsetof(CRTCParams, PS_HPHASE) == 0x54, "CRTCParams.PS_HPHASE");
+static_assert(__builtin_offsetof(CRTCParams, PPS_0) == 0x88, "CRTCParams.PPS_0");
+static_assert(__builtin_offsetof(CRTCParams, PPS_1) == 0x8C, "CRTCParams.PPS_1");
+static_assert(__builtin_offsetof(CRTCParams, PPS_2) == 0x90, "CRTCParams.PPS_2");
+static_assert(__builtin_offsetof(CRTCParams, PPS_3) == 0x94, "CRTCParams.PPS_3");
+static_assert(__builtin_offsetof(CRTCParams, PPS_4) == 0x98, "CRTCParams.PPS_4");
+static_assert(__builtin_offsetof(CRTCParams, PPS_5) == 0x9C, "CRTCParams.PPS_5");
+static_assert(__builtin_offsetof(CRTCParams, PPS_6) == 0xA0, "CRTCParams.PPS_6");
+static_assert(__builtin_offsetof(CRTCParams, PPS_7) == 0xA4, "CRTCParams.PPS_7");
+static_assert(__builtin_offsetof(CRTCParams, PPS_8) == 0xA8, "CRTCParams.PPS_8");
+static_assert(__builtin_offsetof(CRTCParams, PPS_9) == 0xAC, "CRTCParams.PPS_9");
+static_assert(__builtin_offsetof(CRTCParams, PPS_10) == 0xB0, "CRTCParams.PPS_10");
+static_assert(__builtin_offsetof(CRTCParams, PPS_16) == 0xB4, "CRTCParams.PPS_16");
+static_assert(__builtin_offsetof(CRTCParams, DSC_ENGINE_SEL) == 0xE8, "CRTCParams.DSC_ENGINE_SEL");
+static_assert(__builtin_offsetof(CRTCParams, DSC_JOINER_CTL) == 0xEC, "CRTCParams.DSC_JOINER_CTL");
+
+// struct LinkConfig -- 0x80 bytes, 1 components
+struct LinkConfig {
+    uint8_t        _opaque[128]; // +0x0
+};
+static_assert(sizeof(LinkConfig) == 0x80, "LinkConfig size");
+static_assert(__builtin_offsetof(LinkConfig, _opaque) == 0x0, "LinkConfig._opaque");
+
+// struct PLANEPARAMS -- 0x2C bytes, 6 components
+struct PLANEPARAMS {
+    uint32_t       PLANE_CTL; // +0x0
+    uint8_t        _pad_0004[20]; // +0x4
+    uint32_t       PLANE_STRIDE; // +0x18
+    uint8_t        _pad_001C[4]; // +0x1C
+    uint32_t       PLANE_SURF; // +0x20
+    uint8_t        _pad_0024[8]; // +0x24
+};
+static_assert(sizeof(PLANEPARAMS) == 0x2C, "PLANEPARAMS size");
+static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_CTL) == 0x0, "PLANEPARAMS.PLANE_CTL");
+static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_STRIDE) == 0x18, "PLANEPARAMS.PLANE_STRIDE");
+static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_SURF) == 0x20, "PLANEPARAMS.PLANE_SURF");
+
+// struct SCALERPARAMS -- 0xC bytes, 3 components
+struct SCALERPARAMS {
+    uint32_t       PS_CTRL; // +0x0
+    uint32_t       PS_WIN_POS; // +0x4
+    uint32_t       PS_WIN_SZ; // +0x8
+};
+static_assert(sizeof(SCALERPARAMS) == 0xC, "SCALERPARAMS size");
+static_assert(__builtin_offsetof(SCALERPARAMS, PS_CTRL) == 0x0, "SCALERPARAMS.PS_CTRL");
+static_assert(__builtin_offsetof(SCALERPARAMS, PS_WIN_POS) == 0x4, "SCALERPARAMS.PS_WIN_POS");
+static_assert(__builtin_offsetof(SCALERPARAMS, PS_WIN_SZ) == 0x8, "SCALERPARAMS.PS_WIN_SZ");
+
+// struct ppsConfig_t -- 0x18C bytes, 1 components
+struct ppsConfig_t {
+    uint8_t        _opaque[396]; // +0x0
+};
+static_assert(sizeof(ppsConfig_t) == 0x18C, "ppsConfig_t size");
+static_assert(__builtin_offsetof(ppsConfig_t, _opaque) == 0x0, "ppsConfig_t._opaque");
+
+// struct ppsOpt_t -- 0x50 bytes, 1 components
+struct ppsOpt_t {
+    uint8_t        _opaque[80]; // +0x0
+};
+static_assert(sizeof(ppsOpt_t) == 0x50, "ppsOpt_t size");
+static_assert(__builtin_offsetof(ppsOpt_t, _opaque) == 0x0, "ppsOpt_t._opaque");
 
 // ---- Stubs (whitelist structs not yet defined in Ghidra) ----
-
-// PLANEPARAMS -- STUB: not yet defined in Ghidra (expected offsets only)
-struct PLANEPARAMS {
-    uint32_t PLANE_CTL; // +0x0 (expected)
-    uint32_t PLANE_STRIDE; // +0x4 (expected)
-    uint32_t PLANE_POS; // +0x8 (expected)
-    uint32_t PLANE_SIZE; // +0xC (expected)
-    uint32_t PLANE_KEYVAL; // +0x10 (expected)
-    uint32_t PLANE_KEYMSK; // +0x14 (expected)
-    uint32_t PLANE_OFFSET; // +0x18 (expected)
-    uint32_t PLANE_COLOR_CTL; // +0x1C (expected)
-};
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_CTL) == 0x0, "PLANEPARAMS.PLANE_CTL expected");
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_STRIDE) == 0x4, "PLANEPARAMS.PLANE_STRIDE expected");
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_POS) == 0x8, "PLANEPARAMS.PLANE_POS expected");
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_SIZE) == 0xC, "PLANEPARAMS.PLANE_SIZE expected");
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_KEYVAL) == 0x10, "PLANEPARAMS.PLANE_KEYVAL expected");
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_KEYMSK) == 0x14, "PLANEPARAMS.PLANE_KEYMSK expected");
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_OFFSET) == 0x18, "PLANEPARAMS.PLANE_OFFSET expected");
-static_assert(__builtin_offsetof(PLANEPARAMS, PLANE_COLOR_CTL) == 0x1C, "PLANEPARAMS.PLANE_COLOR_CTL expected");
 
 // PlaneParams -- STUB: not yet defined in Ghidra
 struct PlaneParams {
@@ -103,37 +142,8 @@ struct PlaneParams {
     uint8_t _opaque[1];
 };
 
-// SCALERPARAMS -- STUB: not yet defined in Ghidra (expected offsets only)
-struct SCALERPARAMS {
-    uint32_t PS_CTRL; // +0x0 (expected)
-    uint32_t PS_WIN_POS; // +0x4 (expected)
-    uint32_t PS_WIN_SZ; // +0x8 (expected)
-    uint8_t _pad_000C[0x4]; // trailing
-};
-static_assert(__builtin_offsetof(SCALERPARAMS, PS_CTRL) == 0x0, "SCALERPARAMS.PS_CTRL expected");
-static_assert(__builtin_offsetof(SCALERPARAMS, PS_WIN_POS) == 0x4, "SCALERPARAMS.PS_WIN_POS expected");
-static_assert(__builtin_offsetof(SCALERPARAMS, PS_WIN_SZ) == 0x8, "SCALERPARAMS.PS_WIN_SZ expected");
-
 // ScalerParams -- STUB: not yet defined in Ghidra
 struct ScalerParams {
-    // TODO: define fields in Ghidra's Data Type Manager
-    uint8_t _opaque[1];
-};
-
-// ppsConfig_t -- STUB: not yet defined in Ghidra
-struct ppsConfig_t {
-    // TODO: define fields in Ghidra's Data Type Manager
-    uint8_t _opaque[1];
-};
-
-// ppsOpt_t -- STUB: not yet defined in Ghidra
-struct ppsOpt_t {
-    // TODO: define fields in Ghidra's Data Type Manager
-    uint8_t _opaque[1];
-};
-
-// LinkConfig -- STUB: not yet defined in Ghidra
-struct LinkConfig {
     // TODO: define fields in Ghidra's Data Type Manager
     uint8_t _opaque[1];
 };

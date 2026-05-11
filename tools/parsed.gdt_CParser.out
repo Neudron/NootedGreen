@@ -21,7 +21,12 @@ typedef struct CRTCParams {
     uint32_t TRANS_VSYNC;          
     uint32_t PIPE_SRCSZ;           
     uint32_t TRANS_CONF;           
-    uint8_t  _pad_0030[0x58];      
+    uint8_t  _pad_0030[0x18];      
+    uint32_t PS_PS_WIN_POS;        
+    uint32_t PS_PS_WIN_SZ;         
+    uint32_t PIPE_SEAM_EXCESS;     
+    uint32_t PS_HPHASE;            
+    uint8_t  _pad_0058[0x30];      
     uint32_t PPS_0;                
     uint32_t PPS_1;                
     uint32_t PPS_2;                
@@ -42,16 +47,11 @@ typedef struct CRTCParams {
 
 typedef struct PLANEPARAMS {
     uint32_t PLANE_CTL;            
+    uint8_t  _pad_0004[0x14];      
     uint32_t PLANE_STRIDE;         
-    uint32_t PLANE_POS;            
-    uint32_t PLANE_SIZE;           
-    uint32_t PLANE_KEYVAL;         
-    uint32_t PLANE_KEYMSK;         
-    uint32_t PLANE_OFFSET;         
-    uint32_t PLANE_COLOR_CTL;      
+    uint8_t  _pad_001C[0x4];       
     uint32_t PLANE_SURF;           
-    uint32_t PLANE_AUX_DIST;       
-    uint32_t PLANE_AUX_OFFSET;     
+    uint8_t  _pad_0024[0x8];       
 } PLANEPARAMS;
 
 

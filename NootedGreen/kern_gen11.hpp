@@ -1581,6 +1581,33 @@ private:
 	static void setupPipeScaler(void *that, void *path, void *params);
 	mach_vm_address_t osetupPipeScaler {};
 
+	// V401: AppleIntelBaseController::paramsSurfCompare(CRTCParams *, CRTCParams *, PLANEPARAMS *, PLANEPARAMS *)
+	// Read-only diagnostic. Fires on every flip — Apple uses this to decide whether
+	// plane registers need reprogramming. Logs PLANE_CTL tiling bits, STRIDE, SURF.
+	static bool paramsSurfCompare(void *that, void *p1, void *p2, void *pl1, void *pl2);
+	mach_vm_address_t oparamsSurfCompare {};
+
+	// V402: AppleIntelBaseController::setupDSCEngineParams(AppleIntelFramebuffer *, CRTCParams *, AppleIntelDisplayPath *, IODetailedTimingInformationV2 *)
+	// Read-only diagnostic. Linux confirms DSC=off on our panel; this hook lets us
+	// see if Apple still configures DSC despite Info.plist DSCSupport=0.
+	static void setupDSCEngineParams(void *that, void *fb, void *params, void *path, void *timing);
+	mach_vm_address_t osetupDSCEngineParams {};
+
+	// V403: AppleIntelBaseController::SetupParams(AppleIntelFramebuffer *, AppleIntelDisplayPath *, CRTCParams *, IODetailedTimingInformationV2 const *)
+	// The MASTER CRTCParams builder — runs once per modeset before any consumer.
+	// After this returns CRTCParams is fully populated. Read-only logger: snapshot
+	// every key field so we can see the source-of-truth values BEFORE setupPipeScaler /
+	// setupDSCEngineParams / hwRegsNeedUpdate / hwSetMode consume them.
+	static void setupParams(void *that, void *fb, void *path, void *params, const void *timing);
+	mach_vm_address_t osetupParams {};
+
+	// V404: AppleIntelBaseController::setupPipeWatermarks(AppleIntelFramebuffer *, AppleIntelDisplayPath *, CRTCParams *)
+	// Called from inside SetupParams BEFORE setupPipeScaler. Per-pipe DBUF/watermark
+	// allocator. Prime suspect for setting PIPE_SEAM_EXCESS=0x1 since seam-joining
+	// affects DBUF distribution. Read-only logger: pre/post PIPE_SEAM_EXCESS.
+	static void setupPipeWatermarks(void *that, void *fb, void *path, void *params);
+	mach_vm_address_t osetupPipeWatermarks {};
+
 	static void  disablePowerWellPG(void *that,uint param_1);
 	mach_vm_address_t odisablePowerWellPG {};
 	

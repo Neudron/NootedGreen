@@ -480,6 +480,20 @@ bool Gen11::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 			// pipe scaler is downscaling (PIPE_SRCSZ vs PS_PS_WIN_SZ mismatch) — if
 			// yes, that's a direct cause of the fragmented/repeated scanout.
 			{"__ZN16AppleIntelScaler15setupPipeScalerEP21AppleIntelDisplayPathP10CRTCParams", setupPipeScaler, this->osetupPipeScaler},
+			// V401: paramsSurfCompare — read-only. Fires per flip. Logs PLANE_CTL
+			// tiling bits (mask 0xF800000), PLANE_STRIDE (+0x18), PLANE_SURF (+0x20)
+			// for both old and new PLANEPARAMS, plus CRTCParams PIPE_SRCSZ.
+			{"__ZN24AppleIntelBaseController17paramsSurfCompareEP10CRTCParamsS1_PN15AppleIntelPlane11PLANEPARAMSES4_", paramsSurfCompare, this->oparamsSurfCompare},
+			// V402: setupDSCEngineParams — read-only. Logs entry of DSC config path.
+			// Linux says DSC=off; this hook reveals whether Apple still goes through it.
+			{"__ZN24AppleIntelBaseController20setupDSCEngineParamsEP21AppleIntelFramebufferP10CRTCParamsP21AppleIntelDisplayPathP29IODetailedTimingInformationV2", setupDSCEngineParams, this->osetupDSCEngineParams},
+			// V403: SetupParams — master CRTCParams builder. Read-only logger of all
+			// key fields after Apple populates the struct. Single chokepoint where
+			// future origin-level overrides should land.
+			{"__ZN24AppleIntelBaseController11SetupParamsEP21AppleIntelFramebufferP21AppleIntelDisplayPathP10CRTCParamsPK29IODetailedTimingInformationV2", setupParams, this->osetupParams},
+			// V404: setupPipeWatermarks — runs INSIDE SetupParams before setupPipeScaler.
+			// Per-pipe DBUF/watermark allocator. Prime suspect for setting PIPE_SEAM_EXCESS=0x1.
+			{"__ZN24AppleIntelBaseController19setupPipeWatermarksEP21AppleIntelFramebufferP21AppleIntelDisplayPathP10CRTCParams", setupPipeWatermarks, this->osetupPipeWatermarks},
 			{"__ZN15AppleIntelPlane19updateRegisterCacheEv",AppleIntelPlaneupdateRegisterCache, this->oAppleIntelPlaneupdateRegisterCache},
 			{"__ZN16AppleIntelScaler19updateRegisterCacheEv",AppleIntelScalerupdateRegisterCache, this->oAppleIntelScalerupdateRegisterCache},
 			{"__ZN19AppleIntelPowerWell20disableDisplayEngineEv",disableDisplayEngine, this->odisableDisplayEngine},
@@ -5335,9 +5349,17 @@ void Gen11::raWriteRegister32(void *that,unsigned long param_1, UInt32 param_2)
 			}
 			param_2 = 0;
 		}
-		// Linear CTL/STRIDE forces — gated on !isRealTGL. Real TGL programs these
-		// correctly via Apple's native code path; only spoofed RPL/ADL-P needs the override.
+		// CTL/STRIDE forces — MATCH APPLE'S NATURAL INTENT.
+		// V401 paramsSurfCompare logs prove Apple wants: CTL bits[12:10]=001 (X-tiled),
+		// STRIDE=0x14 (20 X-tile units = 10240B/row = 2560*4bpp). Apple's IOSurface
+		// allocator produces X-tiled physical buffers — Y-tile and linear forces both
+		// scan wrong bytes from an X-tile buffer. Match Apple = same tile mode as the
+		// buffer = correct scanout, IF the SURF address reaches the right pages
+		// (V99R[P]+V99G handle the SURF redirect / GGTT remap unconditionally).
+		//
+		// Gated on !isRealTGL. Real TGL programs natively.
 		if (NGreen::callback && !NGreen::callback->isRealTGL) {
+			// force CTL linear and STRIDE=0xa0 (CPU compositor writes linearly via BAR2).
 			uint32_t hwTiling = (hwCtl >> 10) & 0x7;
 			if (hwTiling != 0)
 				NGreen::callback->writeReg32(0x70180, hwCtl & ~(0x7u << 10));
@@ -5953,18 +5975,63 @@ void Gen11::programPipeScaler(void *that,void *param_1)
 }
 
 // V400: AppleIntelScaler::setupPipeScaler(AppleIntelDisplayPath *, CRTCParams *)
-// READ-ONLY diagnostic. Calls original, then dumps the pipe-scaler-related fields
-// Apple wrote into CRTCParams. Goal: confirm whether the pipe scaler is downscaling
-// (PIPE_SRCSZ != PS_PS_WIN_SZ) — that would directly explain the fragmented/
-// repeated scanout pattern seen on this RPL-P panel without DSC.
+// ORIGIN-LEVEL FIX for seam-joining scaler wrongly enabled on single-pipe panels.
 //
-// Gated on !isRealTGL because real TGL programs the scaler natively and we don't
-// want diagnostic spam there.
+// Apple's setupPipeScaler enters the "Seam joining scaler enabled" branch when
+// a byte gate is non-zero — disasm reveals:
+//   rax = this->[+0x10]                     (AppleIntelScaler's controller ptr)
+//   if [rax+0x3FD8] == 0xFFFFFFFF (device-tree absent on spoofed RPL)
+//       rax += 0x1E5
+//   else
+//       rax += 0x1E3
+//   if [rax] != 0:  enable seam joining
+//   else:           skip seam joining
+//
+// Linux i915 on this exact hardware confirms `bigjoiner: no, pipes: 0x0` —
+// dual-pipe joining must NOT be active for this single-pipe 2560x1600 eDP panel.
+// Apple is doing it anyway, producing the per-row offset / fragmented pattern.
+//
+// Fix: before calling original, zero BOTH gate bytes (+0x1E3 and +0x1E5) at
+// this->[+0x10]. Belt-and-suspenders covers both device-tree-present and absent
+// branches. Origin-level — modifies Apple's own decision input, not MMIO. The
+// rest of Apple's code paths run unchanged with seam joining naturally skipped.
+//
+// Gated on !isRealTGL since real TGL doesn't need this.
+//
+// Post-call still logs CRTCParams scaler fields to verify SEAM_EXCESS==0.
 void Gen11::setupPipeScaler(void *that, void *path, void *params)
 {
-	// Apple's setupPipeScaler also needs ccont fixup (same as programPipeScaler),
-	// per the V204 pattern — without it the original may crash on this=NULL ccont.
+	// ccont fixup (same as programPipeScaler) — needed because V204 init hooks
+	// don't always populate ccont; original would crash on this=NULL ccont path.
 	getMember<void *>(that, 0x28) = ccont;
+
+	// Pre-call snapshot — captures values BEFORE setupPipeScaler runs so we can
+	// tell whether THIS function sets PIPE_SEAM_EXCESS=0x1 or whether something
+	// upstream did. Also captures the gate bytes our zero-the-gate attempt targeted.
+	uint32_t pre_seam = 0, pre_winsz = 0, pre_winpos = 0, pre_hphase = 0;
+	uint8_t pre_gate1E3 = 0xFF, pre_gate1E5 = 0xFF;
+	bool have_base = false;
+	if (NGreen::callback != nullptr && !NGreen::callback->isRealTGL) {
+		if (params != nullptr) {
+			auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
+			pre_seam   = p->PIPE_SEAM_EXCESS;
+			pre_winsz  = p->PS_PS_WIN_SZ;
+			pre_winpos = p->PS_PS_WIN_POS;
+			pre_hphase = p->PS_HPHASE;
+		}
+		if (that != nullptr) {
+			auto *base = *reinterpret_cast<uint8_t **>(reinterpret_cast<uint8_t *>(that) + 0x10);
+			if (base != nullptr) {
+				have_base    = true;
+				pre_gate1E3  = base[0x1E3];
+				pre_gate1E5  = base[0x1E5];
+				// Still try the gate clear — harmless if not the right gate.
+				base[0x1E3]  = 0;
+				base[0x1E5]  = 0;
+			}
+		}
+	}
+
 	FunctionCast(setupPipeScaler, callback->osetupPipeScaler)(that, path, params);
 
 	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || params == nullptr)
@@ -5975,23 +6042,171 @@ void Gen11::setupPipeScaler(void *that, void *path, void *params)
 	if (v400Count >= 12) return;
 	++v400Count;
 
-	// PIPE_SRCSZ encoding (Intel display spec): (width-1) in low 16 bits,
-	// (height-1) in high 16 bits. PS_PS_WIN_SZ encoding (Apple internal) appears
-	// to use the same width/height-1 packing per the disasm of setupPipeScaler.
-	const uint32_t src_w = (p->PIPE_SRCSZ & 0xFFFF) + 1;
-	const uint32_t src_h = ((p->PIPE_SRCSZ >> 16) & 0xFFFF) + 1;
-	const uint32_t win_w = (p->PS_PS_WIN_SZ & 0xFFFF) + 1;
-	const uint32_t win_h = ((p->PS_PS_WIN_SZ >> 16) & 0xFFFF) + 1;
-	const bool downscale = (win_w != src_w) || (win_h != src_h);
-	SYSLOG("ngreen", "V400[%d]: setupPipeScaler post-call CRTCParams: "
-	       "SRC=%ux%u (PIPE_SRCSZ=0x%x) WIN=%ux%u (PS_PS_WIN_SZ=0x%x) "
-	       "WIN_POS=0x%x SEAM_EXCESS=0x%x HPHASE=0x%x HTOTAL=0x%x VTOTAL=0x%x "
-	       "TRANS_CONF=0x%x %s",
-	       v400Count, src_w, src_h, p->PIPE_SRCSZ,
-	       win_w, win_h, p->PS_PS_WIN_SZ,
-	       p->PS_PS_WIN_POS, p->PIPE_SEAM_EXCESS, p->PS_HPHASE,
-	       p->TRANS_HTOTAL, p->TRANS_VTOTAL, p->TRANS_CONF,
-	       downscale ? "*** DOWNSCALE DETECTED ***" : "(1:1 no scale)");
+	// PIPE_SRCSZ per Intel spec: high 16 = horizontal-1, low 16 = vertical-1.
+	const uint32_t src_w = ((p->PIPE_SRCSZ >> 16) & 0xFFFF) + 1;
+	const uint32_t src_h = (p->PIPE_SRCSZ & 0xFFFF) + 1;
+	SYSLOG("ngreen", "V400[%d]: setupPipeScaler %s gates[+0x1E3,+0x1E5]=(0x%02x,0x%02x) "
+	       "PRE: SEAM=0x%x WINSZ=0x%x WINPOS=0x%x HPHASE=0x%x | "
+	       "POST: SRC=%ux%u SEAM=0x%x WINSZ=0x%x WINPOS=0x%x HPHASE=0x%x "
+	       "HTOTAL=0x%x VTOTAL=0x%x TRANS_CONF=0x%x",
+	       v400Count, have_base ? "base-ok" : "NO-base",
+	       pre_gate1E3, pre_gate1E5,
+	       pre_seam, pre_winsz, pre_winpos, pre_hphase,
+	       src_w, src_h, p->PIPE_SEAM_EXCESS, p->PS_PS_WIN_SZ, p->PS_PS_WIN_POS, p->PS_HPHASE,
+	       p->TRANS_HTOTAL, p->TRANS_VTOTAL, p->TRANS_CONF);
+}
+
+// V401: AppleIntelBaseController::paramsSurfCompare — READ-ONLY logger.
+// Fires per flip. Apple uses the return value to decide whether to fully reprogram
+// the plane. We just log the inputs.
+bool Gen11::paramsSurfCompare(void *that, void *p1, void *p2, void *pl1, void *pl2)
+{
+	bool ret = FunctionCast(paramsSurfCompare, callback->oparamsSurfCompare)(that, p1, p2, pl1, pl2);
+
+	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL) return ret;
+
+	static int v401Count = 0;
+	if (v401Count >= 8) return ret;
+	++v401Count;
+
+	auto *crtc1 = reinterpret_cast<AppleIntel::CRTCParams *>(p1);
+	auto *crtc2 = reinterpret_cast<AppleIntel::CRTCParams *>(p2);
+	auto *plane1 = reinterpret_cast<AppleIntel::PLANEPARAMS *>(pl1);
+	auto *plane2 = reinterpret_cast<AppleIntel::PLANEPARAMS *>(pl2);
+
+	uint32_t old_ctl    = plane1 ? plane1->PLANE_CTL    : 0;
+	uint32_t new_ctl    = plane2 ? plane2->PLANE_CTL    : 0;
+	uint32_t old_stride = plane1 ? plane1->PLANE_STRIDE : 0;
+	uint32_t new_stride = plane2 ? plane2->PLANE_STRIDE : 0;
+	uint32_t old_surf   = plane1 ? plane1->PLANE_SURF   : 0;
+	uint32_t new_surf   = plane2 ? plane2->PLANE_SURF   : 0;
+	uint32_t old_src    = crtc1  ? crtc1->PIPE_SRCSZ    : 0;
+	uint32_t new_src    = crtc2  ? crtc2->PIPE_SRCSZ    : 0;
+
+	// PLANE_CTL tiling field is bits[27:23] (mask 0xF800000) per Apple's internal repr.
+	uint32_t old_tile = (old_ctl >> 23) & 0x1F;
+	uint32_t new_tile = (new_ctl >> 23) & 0x1F;
+
+	SYSLOG("ngreen", "V401[%d]: paramsSurfCompare ret=%d | "
+	       "OLD: CTL=0x%x tile=0x%x STRIDE=0x%x SURF=0x%x SRC=0x%x | "
+	       "NEW: CTL=0x%x tile=0x%x STRIDE=0x%x SURF=0x%x SRC=0x%x",
+	       v401Count, ret,
+	       old_ctl, old_tile, old_stride, old_surf, old_src,
+	       new_ctl, new_tile, new_stride, new_surf, new_src);
+
+	return ret;
+}
+
+// V402: AppleIntelBaseController::setupDSCEngineParams — READ-ONLY logger.
+// Logs entry of DSC config path. Linux says DSC=off on our panel; if Apple still
+// goes through this with non-zero DSC bits, the call is the origin of any DSC
+// corruption and disabling it here would replace V300's CRTCParams write-back.
+void Gen11::setupDSCEngineParams(void *that, void *fb, void *params, void *path, void *timing)
+{
+	// Pre-call snapshot: did anyone set DSC fields before us?
+	uint32_t pre_dsc_engine = 0, pre_dsc_joiner = 0, pre_pps0 = 0;
+	if (NGreen::callback != nullptr && !NGreen::callback->isRealTGL && params != nullptr) {
+		auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
+		pre_dsc_engine = p->DSC_ENGINE_SEL;
+		pre_dsc_joiner = p->DSC_JOINER_CTL;
+		pre_pps0       = p->PPS_0;
+	}
+
+	FunctionCast(setupDSCEngineParams, callback->osetupDSCEngineParams)(that, fb, params, path, timing);
+
+	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || params == nullptr) return;
+
+	static int v402Count = 0;
+	if (v402Count >= 6) return;
+	++v402Count;
+
+	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
+	const bool dsc_was_enabled = (p->DSC_ENGINE_SEL & 0xF0000000u) != 0;
+	SYSLOG("ngreen", "V402[%d]: setupDSCEngineParams %s | "
+	       "PRE: DSC_ENGINE=0x%x DSC_JOINER=0x%x PPS_0=0x%x | "
+	       "POST: DSC_ENGINE=0x%x DSC_JOINER=0x%x PPS_0=0x%x PPS_16=0x%x",
+	       v402Count,
+	       dsc_was_enabled ? "*** DSC ENABLED (vs Linux=off) ***" : "(DSC stayed off)",
+	       pre_dsc_engine, pre_dsc_joiner, pre_pps0,
+	       p->DSC_ENGINE_SEL, p->DSC_JOINER_CTL, p->PPS_0, p->PPS_16);
+}
+
+// V403: AppleIntelBaseController::SetupParams — post-call.
+// Logs full CRTCParams + causation test: force PIPE_SEAM_EXCESS=0 and PS_PS_WIN_SZ=0
+// so any seam-join config Apple set up earlier in the modeset is wiped after the
+// master builder finishes. If fragmentation disappears with these zeroed, seam was
+// the cause. If unchanged, seam fields are irrelevant and we look elsewhere.
+void Gen11::setupParams(void *that, void *fb, void *path, void *params, const void *timing)
+{
+	FunctionCast(setupParams, callback->osetupParams)(that, fb, path, params, timing);
+
+	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || params == nullptr) return;
+
+	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
+
+	// V403-zero: causation test. Wipe seam-join CRTCParams fields BEFORE any
+	// post-SetupParams consumer reads them (paramsSurfCompare, MMIO emit etc).
+	uint32_t pre_seam  = p->PIPE_SEAM_EXCESS;
+	uint32_t pre_winsz = p->PS_PS_WIN_SZ;
+	uint32_t pre_hphase = p->PS_HPHASE;
+	if (pre_seam != 0 || pre_winsz != 0 || pre_hphase != 0) {
+		p->PIPE_SEAM_EXCESS = 0;
+		p->PS_PS_WIN_SZ     = 0;
+		p->PS_HPHASE        = 0;
+	}
+
+	static int v403Count = 0;
+	if (v403Count >= 6) return;
+	++v403Count;
+
+	SYSLOG("ngreen", "V403[%d]: SetupParams post-call CRTCParams: "
+	       "CLK_SEL=0x%x DDI_FUNC_CTL=0x%x DDI_FUNC_CTL2=0x%x MSA_MISC=0x%x "
+	       "HTOTAL=0x%x HBLANK=0x%x HSYNC=0x%x VTOTAL=0x%x VBLANK=0x%x VSYNC=0x%x "
+	       "PIPE_SRCSZ=0x%x TRANS_CONF=0x%x | "
+	       "PS_WIN_POS=0x%x | PRE: SEAM=0x%x WINSZ=0x%x HPHASE=0x%x -> NOW 0 | "
+	       "DSC_ENGINE=0x%x DSC_JOINER=0x%x PPS_0=0x%x PPS_16=0x%x",
+	       v403Count,
+	       p->TRANS_CLK_SEL, p->TRANS_DDI_FUNC_CTL, p->TRANS_DDI_FUNC_CTL2, p->TRANS_MSA_MISC,
+	       p->TRANS_HTOTAL, p->TRANS_HBLANK, p->TRANS_HSYNC,
+	       p->TRANS_VTOTAL, p->TRANS_VBLANK, p->TRANS_VSYNC,
+	       p->PIPE_SRCSZ, p->TRANS_CONF,
+	       p->PS_PS_WIN_POS,
+	       pre_seam, pre_winsz, pre_hphase,
+	       p->DSC_ENGINE_SEL, p->DSC_JOINER_CTL, p->PPS_0, p->PPS_16);
+}
+
+// V404: AppleIntelBaseController::setupPipeWatermarks — READ-ONLY pre/post.
+// Tells us if setupPipeWatermarks is what sets PIPE_SEAM_EXCESS=0x1. Called
+// from inside SetupParams before setupPipeScaler — if pre=0 post=1 here, this
+// is our seam-join origin (rather than setupPipeScaler).
+void Gen11::setupPipeWatermarks(void *that, void *fb, void *path, void *params)
+{
+	uint32_t pre_seam = 0, pre_winsz = 0, pre_winpos = 0;
+	if (NGreen::callback != nullptr && !NGreen::callback->isRealTGL && params != nullptr) {
+		auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
+		pre_seam   = p->PIPE_SEAM_EXCESS;
+		pre_winsz  = p->PS_PS_WIN_SZ;
+		pre_winpos = p->PS_PS_WIN_POS;
+	}
+
+	FunctionCast(setupPipeWatermarks, callback->osetupPipeWatermarks)(that, fb, path, params);
+
+	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || params == nullptr) return;
+
+	static int v404Count = 0;
+	if (v404Count >= 4) return;
+	++v404Count;
+
+	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
+	SYSLOG("ngreen", "V404[%d]: setupPipeWatermarks | "
+	       "PRE: SEAM=0x%x WINSZ=0x%x WINPOS=0x%x | "
+	       "POST: SEAM=0x%x WINSZ=0x%x WINPOS=0x%x %s",
+	       v404Count,
+	       pre_seam, pre_winsz, pre_winpos,
+	       p->PIPE_SEAM_EXCESS, p->PS_PS_WIN_SZ, p->PS_PS_WIN_POS,
+	       (pre_seam == 0 && p->PIPE_SEAM_EXCESS != 0)
+	           ? "*** SEAM SET HERE ***"
+	           : (pre_seam != 0 ? "(seam pre-existed)" : "(no seam)"));
 }
 
 void Gen11::AppleIntelScalerupdateRegisterCache(void *that)

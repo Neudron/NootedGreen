@@ -84,11 +84,11 @@ void Gen11::init() {
 
 static bool isWEGCoexistMode() {
 	int enabled = 0;
-	if (PE_parse_boot_argn("nbwegcoex", &enabled, sizeof(enabled))) {
+	if (PE_parse_boot_argn("ngwegcoex", &enabled, sizeof(enabled))) {
 		return enabled != 0;
 	}
 
-	return checkKernelArgument("-nbwegcoex");
+	return checkKernelArgument("-ngwegcoex");
 }
 
 static bool isExperimentalMonitorEnabled() {
@@ -1151,14 +1151,11 @@ bool Gen11::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 			}
 		}
 
-		if (!wegCoexist || forceFullMTL) {
+		if (!wegCoexist) {
 			RouteRequestPlus gpuInfoRoute[] = {
 				{"__ZN16IntelAccelerator10getGPUInfoEv", getGPUInfo, this->ogetGPUInfo},
 			};
 			PANIC_COND(!RouteRequestPlus::routeAll(patcher, index, gpuInfoRoute, address, size), "ngreen", "Failed to route getGPUInfo");
-			if (forceFullMTL && wegCoexist) {
-				SYSLOG("ngreen", "FULL_MTL: forcing getGPUInfo route despite coexist mode");
-			}
 		}
 
 		// SKU/device-ID panic bypass (verified @ 0x23c1d in LE binary)
@@ -1578,7 +1575,6 @@ bool Gen11::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 int Gen11::blit3d_supported()
 {
 	return 0;
-	
 }
 
 

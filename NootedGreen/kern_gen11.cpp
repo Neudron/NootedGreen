@@ -2570,35 +2570,70 @@ void Gen11::raWriteRegister32(void *that,unsigned long param_1, UInt32 param_2)
 		if (NGreen::callback && !NGreen::callback->isRealTGL && param_2 >= 0x10000000u) {
 			static int v99PCount = 0;
 			if (v99PCount < 8)
-				SYSLOG("ngreen", "V99R[P%d]: SURF 0x%x->0 (non-aperture blocked, aperture kept)",
+				SYSLOG("ngreen", "V99R[P%d]: SURF 0x%x->aperture (non-aperture redirect)",
 					   ++v99PCount, (uint32_t)param_2);
-			// V99G: remap GGTT[0..3999] → physical pages of the CURRENT scanout buffer.
-			// Re-run whenever Apple's SURF address (srcPage) changes — WS uses double or
-			// triple buffering and flips between non-aperture VAs every frame; with the
-			// previous one-shot guard, GGTT[0..] stayed pinned to the FIRST buffer forever
-			// while WS rotated through 2-3 others → display read stale fragments from old
-			// flips with occasional fresh writes overlapping = fragmented/repeated symptom.
-			// Now: track last srcPage, remap when it changes. Cost ≈ 8000 reg ops per flip.
+
+			// ngreen-buf=N: 1=single, 2=double (default), 3=triple buffering.
+			// Each buffer slot occupies 4000 GGTT pages = 0xFA0000 bytes of aperture:
+			//   slot 0 → GGTT[0..3999],      SURF=0x0
+			//   slot 1 → GGTT[4000..7999],   SURF=0xFA0000
+			//   slot 2 → GGTT[8000..11999],  SURF=0x1F40000
+			// Each unique non-aperture srcPage Apple presents is assigned a fixed slot.
+			// The GGTT PTEs for that slot are remapped to point at the IOSurface's
+			// physical pages. SURF is rewritten to the matching aperture slot address
+			// so the display engine scans the correct physical memory.
+			// With single buffering all flips always land on slot 0 (SURF=0x0).
+			static int  bufCount       = -1;
+			static uint32_t slotPages[3] = {0, 0, 0}; // srcPage assigned to each slot
+			static int  slotCount      = 0;
+			static int  v99GCount      = 0;
+
+			if (bufCount < 0) {
+				int val = 2;
+				PE_parse_boot_argn("ngreen-buf", &val, sizeof(val));
+				bufCount = (val >= 1 && val <= 3) ? val : 2;
+				SYSLOG("ngreen", "V99G: ngreen-buf=%d (buffering slots)", bufCount);
+			}
+
 			uint32_t srcPage = (uint32_t)param_2 >> 12;
-			static uint32_t lastSrcPage = 0;
-			static int v99GCount = 0;
-			if (srcPage != lastSrcPage) {
-				lastSrcPage = srcPage;
+
+			// Find existing slot or assign a new one.
+			int slot = -1;
+			for (int s = 0; s < slotCount; s++) {
+				if (slotPages[s] == srcPage) { slot = s; break; }
+			}
+			if (slot < 0) {
+				if (slotCount < bufCount) {
+					slot = slotCount++;
+				} else {
+					// All slots occupied — evict oldest (slot 0), shift down.
+					for (int s = 0; s < bufCount - 1; s++) slotPages[s] = slotPages[s + 1];
+					slot = bufCount - 1;
+				}
+				slotPages[slot] = srcPage;
+			}
+
+			// Remap GGTT[slot*4000 .. slot*4000+3999] from srcPage..srcPage+3999.
+			{
+				int base = slot * 4000;
 				int remapped = 0, remapSkipped = 0;
 				for (int i = 0; i < 4000; i++) {
 					uint32_t lo = NGreen::callback->readReg32(GGTT_PTE_LO(srcPage + i));
 					uint32_t hi = NGreen::callback->readReg32(GGTT_PTE_HI(srcPage + i));
 					if (!(lo & 1)) { remapSkipped++; continue; }
-					NGreen::callback->writeReg32(GGTT_PTE_LO(i), lo);
-					NGreen::callback->writeReg32(GGTT_PTE_HI(i), hi);
+					NGreen::callback->writeReg32(GGTT_PTE_LO(base + i), lo);
+					NGreen::callback->writeReg32(GGTT_PTE_HI(base + i), hi);
 					remapped++;
 				}
 				NGreen::callback->writeReg32(0x101008, 0x1); // flush GGTT TLB
 				if (++v99GCount <= 8 || (v99GCount & 0x3F) == 0)
-					SYSLOG("ngreen", "V99G[%d]: GGTT[0..%d] <- GGTT[0x%x..] remapped=%d skip=%d",
-						   v99GCount, remapped - 1, srcPage, remapped, remapSkipped);
+					SYSLOG("ngreen", "V99G[%d]: GGTT[%d..%d] <- srcPage=0x%x slot=%d remapped=%d skip=%d",
+						   v99GCount, base, base + 3999, srcPage, slot, remapped, remapSkipped);
 			}
-			param_2 = 0;
+
+			// Redirect SURF to the aperture address of the assigned slot.
+			// slot 0 → 0x0, slot 1 → 0xFA0000, slot 2 → 0x1F40000.
+			param_2 = (uint32_t)slot * 0xFA0000u;
 		}
 		// CTL/STRIDE forces — MATCH APPLE'S NATURAL INTENT.
 		// V401 paramsSurfCompare logs prove Apple wants: CTL bits[12:10]=001 (X-tiled),

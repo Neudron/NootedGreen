@@ -7,6 +7,7 @@
 #include "kern_green.hpp"
 #include "Firmware.hpp"
 #include "kern_patcherplus.hpp"
+#include "AppleIntelParams.hpp"
 #include <Headers/kern_util.hpp>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 
@@ -1330,9 +1331,6 @@ private:
 	static unsigned long loadGuCBinary(void *that);  // route: intercept GuC FW load
 	mach_vm_address_t oloadGuCBinary {};
 
-	static int alwaysReturnSuccess(void *that);  // stub: always returns 0 (success)
-	mach_vm_address_t oalwaysReturnSuccess {};
-
 	static UInt8 wrapLoadGuCBinary(void *that);  // hooks GuC binary loading into accel
 	mach_vm_address_t orgLoadGuCBinary {};
 
@@ -1557,40 +1555,58 @@ private:
 	static void logStateInRegistry(void *that,uint param_1);
 	mach_vm_address_t ologStateInRegistry {};
 	
-	static uint32_t AppleIntelFramebufferinit(void *frame,void *cont,uint32_t param_2);
+	// AppleIntelFramebuffer::init(AppleIntelBaseController*, uint pipeIndex)
+	static uint32_t AppleIntelFramebufferinit(AppleIntel::AppleIntelFramebuffer *frame,
+	                                          AppleIntel::AppleIntelBaseController *cont,
+	                                          uint32_t pipeIndex);
 	mach_vm_address_t oAppleIntelFramebufferinit {};
 
-	static uint64_t AppleIntelPlaneinit(void *that,uint32_t param_1);
+	// AppleIntelPlane::init(IGPlaneID pipeIndex)
+	static uint64_t AppleIntelPlaneinit(AppleIntel::AppleIntelPlane *that, uint32_t pipeIndex);
 	mach_vm_address_t oAppleIntelPlaneinit {};
 
-	static uint64_t AppleIntelScalerinit(void *that,uint32_t param_1);
+	// AppleIntelScaler::init(IGScalerID pipeIndex)
+	static uint64_t AppleIntelScalerinit(AppleIntel::AppleIntelScaler *that, uint32_t pipeIndex);
 	mach_vm_address_t oAppleIntelScalerinit {};
 
-	static void  disableScaler(void *that,bool param_1);
+	// AppleIntelScaler::disableScaler(bool)
+	static void  disableScaler(AppleIntel::AppleIntelScaler *that, bool disable);
 	mach_vm_address_t odisableScaler {};
 
-	static void  enablePlane(void *that,bool param_1);
+	// AppleIntelPlane::enablePlane(bool)
+	static void  enablePlane(AppleIntel::AppleIntelPlane *that, bool enable);
 	mach_vm_address_t oenablePlane {};
 
-	static void programPipeScaler(void *that,void *param_1);
+	// AppleIntelScaler::programPipeScaler(AppleIntelDisplayPath*)
+	static void programPipeScaler(AppleIntel::AppleIntelScaler *that, AppleIntel::AppleIntelDisplayPath *displayPath);
 	mach_vm_address_t oprogramPipeScaler {};
 
 	// V400: AppleIntelScaler::setupPipeScaler(AppleIntelDisplayPath *, CRTCParams *)
 	// Read-only logging hook — dumps pipe scaler fields after Apple computes them
 	// (PIPE_SRCSZ vs PS_PS_WIN_SZ tells us whether downscaling is happening).
-	static void setupPipeScaler(void *that, void *path, void *params);
+	// AppleIntelScaler::setupPipeScaler(AppleIntelDisplayPath*, CRTCParams*)
+	static void setupPipeScaler(AppleIntel::AppleIntelScaler *that, AppleIntel::AppleIntelDisplayPath *path,
+	                            AppleIntel::CRTCParams *params);
 	mach_vm_address_t osetupPipeScaler {};
 
 	// V401: AppleIntelBaseController::paramsSurfCompare(CRTCParams *, CRTCParams *, PLANEPARAMS *, PLANEPARAMS *)
 	// Read-only diagnostic. Fires on every flip — Apple uses this to decide whether
 	// plane registers need reprogramming. Logs PLANE_CTL tiling bits, STRIDE, SURF.
-	static bool paramsSurfCompare(void *that, void *p1, void *p2, void *pl1, void *pl2);
+	// AppleIntelBaseController::paramsSurfCompare(CRTCParams*, CRTCParams*, PLANEPARAMS*, PLANEPARAMS*)
+	static bool paramsSurfCompare(AppleIntel::AppleIntelBaseController *that,
+	                              AppleIntel::CRTCParams *p1, AppleIntel::CRTCParams *p2,
+	                              AppleIntel::PLANEPARAMS *pl1, AppleIntel::PLANEPARAMS *pl2);
 	mach_vm_address_t oparamsSurfCompare {};
 
 	// V402: AppleIntelBaseController::setupDSCEngineParams(AppleIntelFramebuffer *, CRTCParams *, AppleIntelDisplayPath *, IODetailedTimingInformationV2 *)
 	// Read-only diagnostic. Linux confirms DSC=off on our panel; this hook lets us
 	// see if Apple still configures DSC despite Info.plist DSCSupport=0.
-	static void setupDSCEngineParams(void *that, void *fb, void *params, void *path, void *timing);
+	// AppleIntelBaseController::setupDSCEngineParams(AppleIntelFramebuffer*, CRTCParams*, AppleIntelDisplayPath*, IODetailedTimingInformationV2*)
+	static void setupDSCEngineParams(AppleIntel::AppleIntelBaseController *that,
+	                                 AppleIntel::AppleIntelFramebuffer *fb,
+	                                 AppleIntel::CRTCParams *params,
+	                                 AppleIntel::AppleIntelDisplayPath *path,
+	                                 IODetailedTimingInformationV2 *timing);
 	mach_vm_address_t osetupDSCEngineParams {};
 
 	// V403: AppleIntelBaseController::SetupParams(AppleIntelFramebuffer *, AppleIntelDisplayPath *, CRTCParams *, IODetailedTimingInformationV2 const *)
@@ -1598,21 +1614,30 @@ private:
 	// After this returns CRTCParams is fully populated. Read-only logger: snapshot
 	// every key field so we can see the source-of-truth values BEFORE setupPipeScaler /
 	// setupDSCEngineParams / hwRegsNeedUpdate / hwSetMode consume them.
-	static void setupParams(void *that, void *fb, void *path, void *params, const void *timing);
+	// AppleIntelBaseController::SetupParams(AppleIntelFramebuffer*, AppleIntelDisplayPath*, CRTCParams*, const IODetailedTimingInformationV2*)
+	static void setupParams(AppleIntel::AppleIntelBaseController *that,
+	                        AppleIntel::AppleIntelFramebuffer *fb,
+	                        AppleIntel::AppleIntelDisplayPath *path,
+	                        AppleIntel::CRTCParams *params,
+	                        const IODetailedTimingInformationV2 *timing);
 	mach_vm_address_t osetupParams {};
 
 	// V404: AppleIntelBaseController::setupPipeWatermarks(AppleIntelFramebuffer *, AppleIntelDisplayPath *, CRTCParams *)
 	// Called from inside SetupParams BEFORE setupPipeScaler. Per-pipe DBUF/watermark
 	// allocator. Prime suspect for setting PIPE_SEAM_EXCESS=0x1 since seam-joining
 	// affects DBUF distribution. Read-only logger: pre/post PIPE_SEAM_EXCESS.
-	static void setupPipeWatermarks(void *that, void *fb, void *path, void *params);
+	// AppleIntelBaseController::setupPipeWatermarks(AppleIntelFramebuffer*, AppleIntelDisplayPath*, CRTCParams*)
+	static void setupPipeWatermarks(AppleIntel::AppleIntelBaseController *that,
+	                                AppleIntel::AppleIntelFramebuffer *fb,
+	                                AppleIntel::AppleIntelDisplayPath *path,
+	                                AppleIntel::CRTCParams *params);
 	mach_vm_address_t osetupPipeWatermarks {};
 
 	// V405: AppleIntelPlane::configureColorPipeLine(FlipTransactionArgs*, bool)
 	// Dispatches 8/10/12/12SEG gamma pipeline from a BPC selector in FlipTransactionArgs.
 	// Logs GAMMA_MODE (0x4A480) and PIPE_MISC (0x70030) pre/post to confirm correct
 	// Display 13 values on ADL-P.  Gated on !isRealTGL.
-	static void configureColorPipeLine(void *that, void *flipArgs, bool param_2);
+	static void configureColorPipeLine(AppleIntel::AppleIntelPlane *that, AppleIntel::FlipTransactionArgs *flipArgs, bool param_2);
 	mach_vm_address_t oConfigureColorPipeLine {};
 
 	// V406: AppleIntelPlane::configurePlane(FlipTransactionArgs*)
@@ -1620,7 +1645,7 @@ private:
 	// (neither X-tiled=0 nor Y-tiled=1) so Apple computes PLANE_CTL bits[12:10]=000
 	// (linear) and PLANE_STRIDE = pitch_bytes/512 = 0x14. Physical pages are CPU-written
 	// linearly; forcing this here ensures the display engine fetches scanlines correctly.
-	static void configurePlane(void *that, void *flipArgs);
+	static void configurePlane(AppleIntel::AppleIntelPlane *that, AppleIntel::FlipTransactionArgs *flipArgs);
 	mach_vm_address_t oConfigurePlane {};
 
 	static void  disablePowerWellPG(void *that,uint param_1);
@@ -1828,8 +1853,8 @@ private:
 	static void * getBlit3DContext(void *that,bool param_1);
 	mach_vm_address_t ogetBlit3DContext {};
 	
-	static void  AppleIntelPlanec1(void *that);
-	static void  AppleIntelScalerc1(void *that);
+	static void  AppleIntelPlanec1(AppleIntel::AppleIntelPlane *that);
+	static void  AppleIntelScalerc1(AppleIntel::AppleIntelScaler *that);
 	
 	static void * AppleIntelScalernew(unsigned long param_1);
 	mach_vm_address_t oAppleIntelScalernew {};
@@ -1884,10 +1909,10 @@ private:
 	static long getPortByDDI(uint param_1);
 	mach_vm_address_t ogetPortByDDI {};
 
-	static void AppleIntelScalerupdateRegisterCache(void *that);
+	static void AppleIntelScalerupdateRegisterCache(AppleIntel::AppleIntelScaler *that);
 	mach_vm_address_t oAppleIntelScalerupdateRegisterCache {};
 
-	static void AppleIntelPlaneupdateRegisterCache(void *that);
+	static void AppleIntelPlaneupdateRegisterCache(AppleIntel::AppleIntelPlane *that);
 	mach_vm_address_t oAppleIntelPlaneupdateRegisterCache {};
 
 	static void PowerWellinit(void *that,void *param_1);

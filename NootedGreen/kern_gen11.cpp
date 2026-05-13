@@ -449,7 +449,7 @@ bool Gen11::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 
 		RouteRequestPlus requests[] = {
 			// ...existing routes...
-			{"__ZN24AppleIntelBaseController17registerWithAICPMEPv", alwaysReturnSuccess, this->oalwaysReturnSuccess},
+			//{"__ZN24AppleIntelBaseController17registerWithAICPMEPv", alwaysReturnSuccess, this->oalwaysReturnSuccess},
 			// ...existing routes...
 			/*{"__ZN19AppleIntelPowerWell21hwSetPowerWellStatePGEbj.cold.1",releaseDoorbell},
 			{"__ZN19AppleIntelPowerWell21hwSetPowerWellStatePGEbj.cold.2",releaseDoorbell},
@@ -1586,40 +1586,37 @@ void *ccont2;  // AppleIntelBaseController pointer (captured in FBMemMgr_Init)
 
 //FB Hooks
 
-// Stub that does nothing (void)
-int Gen11::alwaysReturnSuccess(void *) { return 0;}
-
-uint64_t Gen11::AppleIntelScalerinit(void *that,uint32_t param_1)
+uint64_t Gen11::AppleIntelScalerinit(AppleIntel::AppleIntelScaler *that, uint32_t pipeIndex)
 {
-	auto ret = FunctionCast(AppleIntelScalerinit, callback->oAppleIntelScalerinit)(that,param_1);
-	getMember<void *>(that, 0x28) = ccont;
-	getMember<void *>(that, 0x10) = ccont2;
+	auto ret = FunctionCast(AppleIntelScalerinit, callback->oAppleIntelScalerinit)(that, pipeIndex);
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelScalerRegCache *>(ccont);
+	that->fPath     = reinterpret_cast<AppleIntel::AppleIntelDisplayPath *>(ccont2);
 	return ret;
 }
 
-uint64_t Gen11::AppleIntelPlaneinit(void *that,uint32_t param_1)
+uint64_t Gen11::AppleIntelPlaneinit(AppleIntel::AppleIntelPlane *that, uint32_t pipeIndex)
 {
-	auto ret = FunctionCast(AppleIntelPlaneinit, callback->oAppleIntelPlaneinit)(that,param_1);
-	getMember<void *>(that, 0x90) = ccont;
+	auto ret = FunctionCast(AppleIntelPlaneinit, callback->oAppleIntelPlaneinit)(that, pipeIndex);
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelPlaneRegCache *>(ccont);
 	return ret;
 }
 
-void Gen11::disableScaler(void *that,bool param_1)
+void Gen11::disableScaler(AppleIntel::AppleIntelScaler *that, bool disable)
 {
-	getMember<void *>(that, 0x28) = ccont;
-	FunctionCast(disableScaler, callback->odisableScaler)(that,param_1);
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelScalerRegCache *>(ccont);
+	FunctionCast(disableScaler, callback->odisableScaler)(that, disable);
 }
 
-void Gen11::enablePlane(void *that,bool param_1)
+void Gen11::enablePlane(AppleIntel::AppleIntelPlane *that, bool enable)
 {
-	getMember<void *>(that, 0x90) = ccont;
-	FunctionCast(enablePlane, callback->oenablePlane)(that,param_1);
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelPlaneRegCache *>(ccont);
+	FunctionCast(enablePlane, callback->oenablePlane)(that, enable);
 }
 
-void Gen11::programPipeScaler(void *that,void *param_1)
+void Gen11::programPipeScaler(AppleIntel::AppleIntelScaler *that, AppleIntel::AppleIntelDisplayPath *displayPath)
 {
-	getMember<void *>(that, 0x28) = ccont;
-	FunctionCast(programPipeScaler, callback->oprogramPipeScaler)(that,param_1);
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelScalerRegCache *>(ccont);
+	FunctionCast(programPipeScaler, callback->oprogramPipeScaler)(that, displayPath);
 }
 
 // V400: AppleIntelScaler::setupPipeScaler(AppleIntelDisplayPath *, CRTCParams *)
@@ -1647,11 +1644,11 @@ void Gen11::programPipeScaler(void *that,void *param_1)
 // Gated on !isRealTGL since real TGL doesn't need this.
 //
 // Post-call still logs CRTCParams scaler fields to verify SEAM_EXCESS==0.
-void Gen11::setupPipeScaler(void *that, void *path, void *params)
+void Gen11::setupPipeScaler(AppleIntel::AppleIntelScaler *that, AppleIntel::AppleIntelDisplayPath *path, AppleIntel::CRTCParams *params)
 {
 	// ccont fixup (same as programPipeScaler) — needed because V204 init hooks
 	// don't always populate ccont; original would crash on this=NULL ccont path.
-	getMember<void *>(that, 0x28) = ccont;
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelScalerRegCache *>(ccont);
 
 	// Pre-call snapshot — captures values BEFORE setupPipeScaler runs so we can
 	// tell whether THIS function sets PIPE_SEAM_EXCESS=0x1 or whether something
@@ -1661,14 +1658,13 @@ void Gen11::setupPipeScaler(void *that, void *path, void *params)
 	bool have_base = false;
 	if (NGreen::callback != nullptr && !NGreen::callback->isRealTGL) {
 		if (params != nullptr) {
-			auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
-			pre_seam   = p->PIPE_SEAM_EXCESS;
-			pre_winsz  = p->PS_PS_WIN_SZ;
-			pre_winpos = p->PS_PS_WIN_POS;
-			pre_hphase = p->PS_HPHASE;
+			pre_seam   = params->PIPE_SEAM_EXCESS;
+			pre_winsz  = params->PS_PS_WIN_SZ;
+			pre_winpos = params->PS_PS_WIN_POS;
+			pre_hphase = params->PS_HPHASE;
 		}
 		if (that != nullptr) {
-			auto *base = *reinterpret_cast<uint8_t **>(reinterpret_cast<uint8_t *>(that) + 0x10);
+			auto *base = reinterpret_cast<uint8_t *>(that->fPath);
 			if (base != nullptr) {
 				have_base    = true;
 				pre_gate1E3  = base[0x1E3];
@@ -1685,14 +1681,13 @@ void Gen11::setupPipeScaler(void *that, void *path, void *params)
 	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || params == nullptr)
 		return;
 
-	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
 	static int v400Count = 0;
 	if (v400Count >= 12) return;
 	++v400Count;
 
 	// PIPE_SRCSZ per Intel spec: high 16 = horizontal-1, low 16 = vertical-1.
-	const uint32_t src_w = ((p->PIPE_SRCSZ >> 16) & 0xFFFF) + 1;
-	const uint32_t src_h = (p->PIPE_SRCSZ & 0xFFFF) + 1;
+	const uint32_t src_w = ((params->PIPE_SRCSZ >> 16) & 0xFFFF) + 1;
+	const uint32_t src_h = (params->PIPE_SRCSZ & 0xFFFF) + 1;
 	SYSLOG("ngreen", "V400[%d]: setupPipeScaler %s gates[+0x1E3,+0x1E5]=(0x%02x,0x%02x) "
 		   "PRE: SEAM=0x%x WINSZ=0x%x WINPOS=0x%x HPHASE=0x%x | "
 		   "POST: SRC=%ux%u SEAM=0x%x WINSZ=0x%x WINPOS=0x%x HPHASE=0x%x "
@@ -1700,14 +1695,16 @@ void Gen11::setupPipeScaler(void *that, void *path, void *params)
 		   v400Count, have_base ? "base-ok" : "NO-base",
 		   pre_gate1E3, pre_gate1E5,
 		   pre_seam, pre_winsz, pre_winpos, pre_hphase,
-		   src_w, src_h, p->PIPE_SEAM_EXCESS, p->PS_PS_WIN_SZ, p->PS_PS_WIN_POS, p->PS_HPHASE,
-		   p->TRANS_HTOTAL, p->TRANS_VTOTAL, p->TRANS_CONF);
+		   src_w, src_h, params->PIPE_SEAM_EXCESS, params->PS_PS_WIN_SZ, params->PS_PS_WIN_POS, params->PS_HPHASE,
+		   params->TRANS_HTOTAL, params->TRANS_VTOTAL, params->TRANS_CONF);
 }
 
 // V401: AppleIntelBaseController::paramsSurfCompare — READ-ONLY logger.
 // Fires per flip. Apple uses the return value to decide whether to fully reprogram
 // the plane. We just log the inputs.
-bool Gen11::paramsSurfCompare(void *that, void *p1, void *p2, void *pl1, void *pl2)
+bool Gen11::paramsSurfCompare(AppleIntel::AppleIntelBaseController *that,
+                              AppleIntel::CRTCParams *p1, AppleIntel::CRTCParams *p2,
+                              AppleIntel::PLANEPARAMS *pl1, AppleIntel::PLANEPARAMS *pl2)
 {
 	bool ret = FunctionCast(paramsSurfCompare, callback->oparamsSurfCompare)(that, p1, p2, pl1, pl2);
 
@@ -1717,19 +1714,14 @@ bool Gen11::paramsSurfCompare(void *that, void *p1, void *p2, void *pl1, void *p
 	if (v401Count >= 8) return ret;
 	++v401Count;
 
-	auto *crtc1 = reinterpret_cast<AppleIntel::CRTCParams *>(p1);
-	auto *crtc2 = reinterpret_cast<AppleIntel::CRTCParams *>(p2);
-	auto *plane1 = reinterpret_cast<AppleIntel::PLANEPARAMS *>(pl1);
-	auto *plane2 = reinterpret_cast<AppleIntel::PLANEPARAMS *>(pl2);
-
-	uint32_t old_ctl    = plane1 ? plane1->PLANE_CTL    : 0;
-	uint32_t new_ctl    = plane2 ? plane2->PLANE_CTL    : 0;
-	uint32_t old_stride = plane1 ? plane1->PLANE_STRIDE : 0;
-	uint32_t new_stride = plane2 ? plane2->PLANE_STRIDE : 0;
-	uint32_t old_surf   = plane1 ? plane1->PLANE_SURF   : 0;
-	uint32_t new_surf   = plane2 ? plane2->PLANE_SURF   : 0;
-	uint32_t old_src    = crtc1  ? crtc1->PIPE_SRCSZ    : 0;
-	uint32_t new_src    = crtc2  ? crtc2->PIPE_SRCSZ    : 0;
+	uint32_t old_ctl    = pl1 ? pl1->PLANE_CTL    : 0;
+	uint32_t new_ctl    = pl2 ? pl2->PLANE_CTL    : 0;
+	uint32_t old_stride = pl1 ? pl1->PLANE_STRIDE : 0;
+	uint32_t new_stride = pl2 ? pl2->PLANE_STRIDE : 0;
+	uint32_t old_surf   = pl1 ? pl1->PLANE_SURF   : 0;
+	uint32_t new_surf   = pl2 ? pl2->PLANE_SURF   : 0;
+	uint32_t old_src    = p1  ? p1->PIPE_SRCSZ    : 0;
+	uint32_t new_src    = p2  ? p2->PIPE_SRCSZ    : 0;
 
 	// PLANE_CTL tiling field is bits[27:23] (mask 0xF800000) per Apple's internal repr.
 	uint32_t old_tile = (old_ctl >> 23) & 0x1F;
@@ -1749,15 +1741,18 @@ bool Gen11::paramsSurfCompare(void *that, void *p1, void *p2, void *pl1, void *p
 // Logs entry of DSC config path. Linux says DSC=off on our panel; if Apple still
 // goes through this with non-zero DSC bits, the call is the origin of any DSC
 // corruption and disabling it here would replace V300's CRTCParams write-back.
-void Gen11::setupDSCEngineParams(void *that, void *fb, void *params, void *path, void *timing)
+void Gen11::setupDSCEngineParams(AppleIntel::AppleIntelBaseController *that,
+                                 AppleIntel::AppleIntelFramebuffer *fb,
+                                 AppleIntel::CRTCParams *params,
+								 AppleIntel::AppleIntelDisplayPath *path,
+                                 IODetailedTimingInformationV2 *timing)
 {
 	// Pre-call snapshot: did anyone set DSC fields before us?
 	uint32_t pre_dsc_engine = 0, pre_dsc_joiner = 0, pre_pps0 = 0;
 	if (NGreen::callback != nullptr && !NGreen::callback->isRealTGL && params != nullptr) {
-		auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
-		pre_dsc_engine = p->DSC_ENGINE_SEL;
-		pre_dsc_joiner = p->DSC_JOINER_CTL;
-		pre_pps0       = p->PPS_0;
+		pre_dsc_engine = params->DSC_ENGINE_SEL;
+		pre_dsc_joiner = params->DSC_JOINER_CTL;
+		pre_pps0       = params->PPS_0;
 	}
 
 	FunctionCast(setupDSCEngineParams, callback->osetupDSCEngineParams)(that, fb, params, path, timing);
@@ -1768,15 +1763,14 @@ void Gen11::setupDSCEngineParams(void *that, void *fb, void *params, void *path,
 	if (v402Count >= 6) return;
 	++v402Count;
 
-	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
-	const bool dsc_was_enabled = (p->DSC_ENGINE_SEL & 0xF0000000u) != 0;
+	const bool dsc_was_enabled = (params->DSC_ENGINE_SEL & 0xF0000000u) != 0;
 	SYSLOG("ngreen", "V402[%d]: setupDSCEngineParams %s | "
 		   "PRE: DSC_ENGINE=0x%x DSC_JOINER=0x%x PPS_0=0x%x | "
 		   "POST: DSC_ENGINE=0x%x DSC_JOINER=0x%x PPS_0=0x%x PPS_16=0x%x",
 		   v402Count,
 		   dsc_was_enabled ? "*** DSC ENABLED (vs Linux=off) ***" : "(DSC stayed off)",
 		   pre_dsc_engine, pre_dsc_joiner, pre_pps0,
-		   p->DSC_ENGINE_SEL, p->DSC_JOINER_CTL, p->PPS_0, p->PPS_16);
+		   params->DSC_ENGINE_SEL, params->DSC_JOINER_CTL, params->PPS_0, params->PPS_16);
 }
 
 // V403: AppleIntelBaseController::SetupParams — post-call.
@@ -1784,23 +1778,25 @@ void Gen11::setupDSCEngineParams(void *that, void *fb, void *params, void *path,
 // so any seam-join config Apple set up earlier in the modeset is wiped after the
 // master builder finishes. If fragmentation disappears with these zeroed, seam was
 // the cause. If unchanged, seam fields are irrelevant and we look elsewhere.
-void Gen11::setupParams(void *that, void *fb, void *path, void *params, const void *timing)
+void Gen11::setupParams(AppleIntel::AppleIntelBaseController *that,
+                        AppleIntel::AppleIntelFramebuffer *fb,
+						AppleIntel::AppleIntelDisplayPath *path,
+                        AppleIntel::CRTCParams *params,
+                        const IODetailedTimingInformationV2 *timing)
 {
 	FunctionCast(setupParams, callback->osetupParams)(that, fb, path, params, timing);
 
 	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || params == nullptr) return;
 
-	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
-
 	// V403-zero: causation test. Wipe seam-join CRTCParams fields BEFORE any
 	// post-SetupParams consumer reads them (paramsSurfCompare, MMIO emit etc).
-	uint32_t pre_seam  = p->PIPE_SEAM_EXCESS;
-	uint32_t pre_winsz = p->PS_PS_WIN_SZ;
-	uint32_t pre_hphase = p->PS_HPHASE;
+	uint32_t pre_seam  = params->PIPE_SEAM_EXCESS;
+	uint32_t pre_winsz = params->PS_PS_WIN_SZ;
+	uint32_t pre_hphase = params->PS_HPHASE;
 	if (pre_seam != 0 || pre_winsz != 0 || pre_hphase != 0) {
-		p->PIPE_SEAM_EXCESS = 0;
-		p->PS_PS_WIN_SZ     = 0;
-		p->PS_HPHASE        = 0;
+		params->PIPE_SEAM_EXCESS = 0;
+		params->PS_PS_WIN_SZ     = 0;
+		params->PS_HPHASE        = 0;
 	}
 
 	static int v403Count = 0;
@@ -1814,27 +1810,29 @@ void Gen11::setupParams(void *that, void *fb, void *path, void *params, const vo
 		   "PS_WIN_POS=0x%x | PRE: SEAM=0x%x WINSZ=0x%x HPHASE=0x%x -> NOW 0 | "
 		   "DSC_ENGINE=0x%x DSC_JOINER=0x%x PPS_0=0x%x PPS_16=0x%x",
 		   v403Count,
-		   p->TRANS_CLK_SEL, p->TRANS_DDI_FUNC_CTL, p->TRANS_DDI_FUNC_CTL2, p->TRANS_MSA_MISC,
-		   p->TRANS_HTOTAL, p->TRANS_HBLANK, p->TRANS_HSYNC,
-		   p->TRANS_VTOTAL, p->TRANS_VBLANK, p->TRANS_VSYNC,
-		   p->PIPE_SRCSZ, p->TRANS_CONF,
-		   p->PS_PS_WIN_POS,
+		   params->TRANS_CLK_SEL, params->TRANS_DDI_FUNC_CTL, params->TRANS_DDI_FUNC_CTL2, params->TRANS_MSA_MISC,
+		   params->TRANS_HTOTAL, params->TRANS_HBLANK, params->TRANS_HSYNC,
+		   params->TRANS_VTOTAL, params->TRANS_VBLANK, params->TRANS_VSYNC,
+		   params->PIPE_SRCSZ, params->TRANS_CONF,
+		   params->PS_PS_WIN_POS,
 		   pre_seam, pre_winsz, pre_hphase,
-		   p->DSC_ENGINE_SEL, p->DSC_JOINER_CTL, p->PPS_0, p->PPS_16);
+		   params->DSC_ENGINE_SEL, params->DSC_JOINER_CTL, params->PPS_0, params->PPS_16);
 }
 
 // V404: AppleIntelBaseController::setupPipeWatermarks — READ-ONLY pre/post.
 // Tells us if setupPipeWatermarks is what sets PIPE_SEAM_EXCESS=0x1. Called
 // from inside SetupParams before setupPipeScaler — if pre=0 post=1 here, this
 // is our seam-join origin (rather than setupPipeScaler).
-void Gen11::setupPipeWatermarks(void *that, void *fb, void *path, void *params)
+void Gen11::setupPipeWatermarks(AppleIntel::AppleIntelBaseController *that,
+                                AppleIntel::AppleIntelFramebuffer *fb,
+								AppleIntel::AppleIntelDisplayPath *path,
+                                AppleIntel::CRTCParams *params)
 {
 	uint32_t pre_seam = 0, pre_winsz = 0, pre_winpos = 0;
 	if (NGreen::callback != nullptr && !NGreen::callback->isRealTGL && params != nullptr) {
-		auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
-		pre_seam   = p->PIPE_SEAM_EXCESS;
-		pre_winsz  = p->PS_PS_WIN_SZ;
-		pre_winpos = p->PS_PS_WIN_POS;
+		pre_seam   = params->PIPE_SEAM_EXCESS;
+		pre_winsz  = params->PS_PS_WIN_SZ;
+		pre_winpos = params->PS_PS_WIN_POS;
 	}
 
 	FunctionCast(setupPipeWatermarks, callback->osetupPipeWatermarks)(that, fb, path, params);
@@ -1845,14 +1843,13 @@ void Gen11::setupPipeWatermarks(void *that, void *fb, void *path, void *params)
 	if (v404Count >= 4) return;
 	++v404Count;
 
-	auto *p = reinterpret_cast<AppleIntel::CRTCParams *>(params);
 	SYSLOG("ngreen", "V404[%d]: setupPipeWatermarks | "
 		   "PRE: SEAM=0x%x WINSZ=0x%x WINPOS=0x%x | "
 		   "POST: SEAM=0x%x WINSZ=0x%x WINPOS=0x%x %s",
 		   v404Count,
 		   pre_seam, pre_winsz, pre_winpos,
-		   p->PIPE_SEAM_EXCESS, p->PS_PS_WIN_SZ, p->PS_PS_WIN_POS,
-		   (pre_seam == 0 && p->PIPE_SEAM_EXCESS != 0)
+		   params->PIPE_SEAM_EXCESS, params->PS_PS_WIN_SZ, params->PS_PS_WIN_POS,
+		   (pre_seam == 0 && params->PIPE_SEAM_EXCESS != 0)
 			   ? "*** SEAM SET HERE ***"
 			   : (pre_seam != 0 ? "(seam pre-existed)" : "(no seam)"));
 }
@@ -1870,7 +1867,7 @@ void Gen11::setupPipeWatermarks(void *that, void *fb, void *path, void *params)
 // Display 13 (ADL-P) uses the same register addresses as Display 12 (TGL), so
 // Apple's writes are structurally correct.  The hook logs pre/post snapshots so
 // we can confirm the hardware actually sees the right values each flip cycle.
-void Gen11::configureColorPipeLine(void *that, void *flipArgs, bool param_2)
+void Gen11::configureColorPipeLine(AppleIntel::AppleIntelPlane *that, AppleIntel::FlipTransactionArgs *flipArgs, bool param_2)
 {
 	uint32_t pre_gamma = 0, pre_misc = 0;
 	uint8_t  sel = 0xFF;
@@ -1880,8 +1877,7 @@ void Gen11::configureColorPipeLine(void *that, void *flipArgs, bool param_2)
 		pre_misc  = NGreen::callback->readReg32(0x70030);  // PIPE_MISC  Pipe A
 		// FlipTransactionArgs BPC selector: IDA 'param_1[7].Tiling' = dword at +0x1C
 		if (flipArgs != nullptr)
-			sel = static_cast<uint8_t>(*reinterpret_cast<uint32_t *>(
-				reinterpret_cast<uint8_t *>(flipArgs) + 0x1C));
+			sel = static_cast<uint8_t>(flipArgs->BPCSelector);
 	}
 
 	FunctionCast(configureColorPipeLine, callback->oConfigureColorPipeLine)(that, flipArgs, param_2);
@@ -1950,8 +1946,8 @@ void Gen11::configureColorPipeLine(void *that, void *flipArgs, bool param_2)
 // === STRIDE FORCE (active for stride-manipulation approaches) ===
 // ============================================================================
 
-#define V406_STRIDE_FORCE_ENABLE 0              // 0=disabled, 1=force post-call
-#define V406_STRIDE_VALUE 0x14                  // 0x14 (std X-tile), 0xa0 (linear?), 0x20, etc.
+#define V406_STRIDE_FORCE_ENABLE 1              // 0=disabled, 1=force post-call
+#define V406_STRIDE_VALUE 0xa0                  // 0x14 (std X-tile), 0xa0 (linear?), 0x20, etc.
 
 // ============================================================================
 // === PLANE_CTL BITS MANIPULATION (advanced—leave as 0 unless testing) ===
@@ -1969,7 +1965,7 @@ void Gen11::configureColorPipeLine(void *that, void *flipArgs, bool param_2)
 
 // ============================================================================
 
-void Gen11::configurePlane(void *that, void *flipArgs)
+void Gen11::configurePlane(AppleIntel::AppleIntelPlane *that, AppleIntel::FlipTransactionArgs *flipArgs)
 {
 	if (NGreen::callback == nullptr || NGreen::callback->isRealTGL || flipArgs == nullptr) {
 		FunctionCast(configurePlane, callback->oConfigurePlane)(that, flipArgs);
@@ -1978,10 +1974,8 @@ void Gen11::configurePlane(void *that, void *flipArgs)
 
 	// Pre-call snapshot
 	uint32_t incomingTiling = 0;
-	if (flipArgs != nullptr) {
-		incomingTiling = *reinterpret_cast<uint32_t *>(
-			reinterpret_cast<uint8_t *>(flipArgs) + 0x3c);
-	}
+	if (flipArgs != nullptr)
+		incomingTiling = flipArgs->TilingEnum;
 
 	static int v406CallCount = 0;
 	static int v406LogCount = 0;
@@ -1993,8 +1987,7 @@ void Gen11::configurePlane(void *that, void *flipArgs)
 	// Apple's configurePlane reads this, takes the corresponding disasm branch,
 	// builds PLANE_CTL with correct tiling bits natively
 	
-	uint32_t *tilingField = reinterpret_cast<uint32_t *>(
-		reinterpret_cast<uint8_t *>(flipArgs) + 0x3c);
+	uint32_t *tilingField = &flipArgs->TilingEnum;
 	const uint32_t savedTiling = *tilingField;
 	*tilingField = V406_TILING_VALUE;
 
@@ -2074,8 +2067,7 @@ void Gen11::configurePlane(void *that, void *flipArgs)
 	// ===== APPROACH 4: DUAL TILING + STRIDE =====
 	// Combine pre-call tiling patch + post-call stride shadow patch
 	
-	uint32_t *tilingField = reinterpret_cast<uint32_t *>(
-		reinterpret_cast<uint8_t *>(flipArgs) + 0x3c);
+	uint32_t *tilingField = &flipArgs->TilingEnum;
 	const uint32_t savedTiling = *tilingField;
 	*tilingField = V406_TILING_VALUE;
 
@@ -2122,15 +2114,15 @@ void Gen11::configurePlane(void *that, void *flipArgs)
 	}
 }
 
-void Gen11::AppleIntelPlaneupdateRegisterCache(void *that)
+void Gen11::AppleIntelPlaneupdateRegisterCache(AppleIntel::AppleIntelPlane *that)
 {
-	getMember<void *>(that, 0x90) = ccont;
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelPlaneRegCache *>(ccont);
 	FunctionCast(AppleIntelPlaneupdateRegisterCache, callback->oAppleIntelPlaneupdateRegisterCache)(that);
 }
 
-void Gen11::AppleIntelScalerupdateRegisterCache(void *that)
+void Gen11::AppleIntelScalerupdateRegisterCache(AppleIntel::AppleIntelScaler *that)
 {
-	getMember<void *>(that, 0x28) = ccont;
+	that->fRegCache = reinterpret_cast<AppleIntel::AppleIntelScalerRegCache *>(ccont);
 	FunctionCast(AppleIntelScalerupdateRegisterCache, callback->oAppleIntelScalerupdateRegisterCache)(that);
 }
 
@@ -2933,11 +2925,15 @@ void Gen11::raWriteRegister32(void *that,unsigned long param_1, UInt32 param_2)
 	FunctionCast(raWriteRegister32, callback->oraWriteRegister32)( that,param_1,param_2);
 };
 
-uint32_t Gen11::AppleIntelFramebufferinit(void *frame,void *cont,uint32_t param_2)
+uint32_t Gen11::AppleIntelFramebufferinit(AppleIntel::AppleIntelFramebuffer *frame,
+                                          AppleIntel::AppleIntelBaseController *cont,
+                                          uint32_t pipeIndex)
 {
+	// Offsets into the full IOFramebuffer subclass hierarchy (much larger than the
+	// tail fields captured in AppleIntelParams::AppleIntelFramebuffer).
 	getMember<void *>(frame, 0x4a40) = ccont;
 	getMember<void *>(frame, 0xc40)  = ccont;
-	auto ret = FunctionCast(AppleIntelFramebufferinit, callback->oAppleIntelFramebufferinit)(frame,cont,param_2);
+	auto ret = FunctionCast(AppleIntelFramebufferinit, callback->oAppleIntelFramebufferinit)(frame, cont, pipeIndex);
 	getMember<void *>(frame, 0x4a40) = ccont;
 	getMember<void *>(frame, 0xc40)  = ccont;
 	return ret;
@@ -8431,12 +8427,12 @@ uint32_t Gen11::tprobePortMode(void * that)
  return Genx::callback->tprobePortMode(that );
 }
 
-void  Gen11::AppleIntelPlanec1(void *that)
+void  Gen11::AppleIntelPlanec1(AppleIntel::AppleIntelPlane *that)
 {
 	Genx::callback->AppleIntelPlanec1(that );
 }
 
-void  Gen11::AppleIntelScalerc1(void *that)
+void  Gen11::AppleIntelScalerc1(AppleIntel::AppleIntelScaler *that)
 {
 	Genx::callback->AppleIntelScalerc1(that );
 }

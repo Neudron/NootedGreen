@@ -211,7 +211,7 @@ struct AppleIntelPowerWell {
     uint32_t            fPG4;              // +0x2C  PG4 state  (reg 0x45404 bit 6)
     uint32_t            fDDI[9];           // +0x30..+0x53  DDI A/B/C/TC1-TC6  (reg 0x45454)
     uint32_t            fAUX[9];           // +0x54..+0x77  AUX A/B/C/TBT1-TBT6 (reg 0x45444)
-    void               *fMMIO;             // +0x78  = fController->unk_0C40 (MMIO accessor = ccont)
+    AppleIntelMMIO     *fMMIO;             // +0x78  MMIO accessor — set by Apple's init; pass to raReadRegister32, not the PowerWell itself
 };
 static_assert(__builtin_offsetof(AppleIntelPowerWell, fAlwaysOn)  == 0x18, "AppleIntelPowerWell.fAlwaysOn");
 static_assert(__builtin_offsetof(AppleIntelPowerWell, fPGBase)    == 0x1C, "AppleIntelPowerWell.fPGBase");

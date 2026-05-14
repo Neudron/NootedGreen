@@ -3405,32 +3405,37 @@ void Gen11::hwInitializeCState(AppleIntel::AppleIntelBaseController *that)
 
 void Gen11::AppleIntelPowerWellinit(AppleIntel::AppleIntelPowerWell *that, AppleIntel::AppleIntelBaseController *param_1)
 {
-	// Capture MMIO accessor before callthrough (param_1+0xC40 = fMMIO, stored at that+0x78).
 	ccont = param_1->unk_0C40;
 
-	// Log what UEFI left enabled in the three power well control registers.
-	// This fires once at kext load and tells us the hardware's initial state.
-	//uint32_t pg  = raReadRegister32(ccont, 0x45404);
-	//uint32_t ddi = raReadRegister32(ccont, 0x45454);
-	//uint32_t aux = raReadRegister32(ccont, 0x45444);
-	//SYSLOG("ngreen", "PowerWell::init UEFI state — PG=0x%08x DDI=0x%08x AUX=0x%08x", pg, ddi, aux);
-
 	FunctionCast(AppleIntelPowerWellinit, callback->oAppleIntelPowerWellinit)(that, param_1);
+
+	// After callthrough the south display domain is clocked; direct BAR read is safe.
+	uint32_t pg  = NGreen::callback->readReg32(0x45404);
+	uint32_t ddi = NGreen::callback->readReg32(0x45454);
+	uint32_t aux = NGreen::callback->readReg32(0x45444);
+	SYSLOG("ngreen", "PowerWell::init UEFI state — PG=0x%08x DDI=0x%08x AUX=0x%08x", pg, ddi, aux);
 
 	// Apple's PowerWell::init checks fController->flags_ig & FB_FLAG_BOOST_PIXEL_FREQUENCY_LIMIT
 	// (+0xC58) before setting fAlwaysOn=1. On RPL/ADL that flag isn't set when the kext first
 	// calls PowerWell::init (initPlatformWorkarounds runs later), so fAlwaysOn stays 0 and
 	// Apple can gate power wells off. We force fAlwaysOn=1 unconditionally on non-real-TGL.
-	// Also re-stamp fMMIO = ccont; the callthrough should have done this but ours is authoritative.
-	SYSLOG("ngreen", "PowerWell::init — flags_ig=0x%x fAlwaysOn(before)=%u",
-		   param_1->flags_ig, that->fAlwaysOn);
+	// Also stamp fMMIO in case Apple's TGL-path init skipped it on ADL-P hardware.
+	SYSLOG("ngreen", "PowerWell::init — flags_ig=0x%x fAlwaysOn(before)=%u fMMIO=%p",
+		   param_1->flags_ig, that->fAlwaysOn, that->fMMIO);
 	if (!NGreen::callback->isRealTGL) {
 		that->fAlwaysOn = 1;
-		that->fMMIO     = ccont;
-		SYSLOG("ngreen", "PowerWell::init forced fAlwaysOn=1, fMMIO stamped");
+		if (!that->fMMIO) that->fMMIO = reinterpret_cast<AppleIntel::AppleIntelMMIO *>(ccont);
+		SYSLOG("ngreen", "PowerWell::init forced fAlwaysOn=1, fMMIO=%p fMMIOBase=%p",
+			   that->fMMIO, that->fMMIO ? that->fMMIO->fMMIOBase : nullptr);
 	}
-	SYSLOG("ngreen", "PowerWell::init done — fAlwaysOn=%u PG1=%u PG2=%u PG3=%u PG4=%u DDI[0]=%u AUX[0]=%u",
-		   that->fAlwaysOn, that->fPG1, that->fPG2, that->fPG3, that->fPG4, that->fDDI[0], that->fAUX[0]);
+	SYSLOG("ngreen", "PowerWell::init done — fAlwaysOn=%u fPGBase=%u PG1=%u PG2=%u PG3=%u PG4=%u",
+		   that->fAlwaysOn, that->fPGBase, that->fPG1, that->fPG2, that->fPG3, that->fPG4);
+	SYSLOG("ngreen", "PowerWell::init DDI — [0]=%u [1]=%u [2]=%u [3]=%u [4]=%u [5]=%u [6]=%u [7]=%u [8]=%u",
+		   that->fDDI[0], that->fDDI[1], that->fDDI[2], that->fDDI[3], that->fDDI[4],
+		   that->fDDI[5], that->fDDI[6], that->fDDI[7], that->fDDI[8]);
+	SYSLOG("ngreen", "PowerWell::init AUX — [0]=%u [1]=%u [2]=%u [3]=%u [4]=%u [5]=%u [6]=%u [7]=%u [8]=%u",
+		   that->fAUX[0], that->fAUX[1], that->fAUX[2], that->fAUX[3], that->fAUX[4],
+		   that->fAUX[5], that->fAUX[6], that->fAUX[7], that->fAUX[8]);
 }
 
 // ─── Sleep/wake lifecycle hooks ──────────────────────────────────────────────

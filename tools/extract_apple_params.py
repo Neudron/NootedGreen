@@ -263,8 +263,12 @@ KNOWN_FIELD_NAMES = {
         0x90: ("fRegCache",    "AppleIntelPlaneRegCache*"),   # getMember<void*>(this,0x90)
     },
     "AppleIntelBaseController": {
-        0x78:  ("fMMIO",        "AppleIntelMMIO*"),            # MMIO register accessor
-        0xC40: ("unk_0C40",     None),                         # RegCache pool/allocator — captured as ccont in PowerWell::init hook; actual type TBD
+        0x78:   ("fMMIO",      "AppleIntelMMIO*"),            # MMIO register accessor
+        0xC40:  ("unk_0C40",   None),                         # RegCache pool/allocator — captured as ccont in PowerWell::init hook; actual type TBD
+        0xC58:  ("flags_ig",   None),                         # boot info flags; FB_FLAG_BOOST_PIXEL_FREQUENCY_LIMIT etc.
+        0xC5C:  ("fInfoFlags2",None),                         # display feature flags; FB_FLAG_ALTERNATE_PWM_INCREMENT* etc.
+        # fGPUIsAwake is at +0x1A00 but cannot be named in the struct due to alignment drift
+        # from unaligned unk_ fields before it. Access via getMember<uint32_t>(ctrl, 0x1A00).
     },
     # AppleIntelPowerWell: fields discovered from PCode analysis of enable/disable/isEnabled/init.
     # Exact offsets TBD by Ghidra; entries will be populated after running the script.

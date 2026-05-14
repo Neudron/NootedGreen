@@ -190,13 +190,19 @@ static_assert(sizeof(LinkConfig) == 0x80, "LinkConfig size");
 //   auto *mmio = getMember<void *>(ctrl, offsetof(AppleIntelBaseController, fMMIO));
 // ---------------------------------------------------------------------------
 
+struct AppleIntelBaseController; // forward — defined below
+
 // struct AppleIntelPowerWell — layout from Ghidra decomp of AppleIntelPowerWell::init (TGL kext).
 // Registers read during init: 0x45404 (PG), 0x45454 (DDI), 0x45444 (AUX).
 // Each fPG/fDDI/fAUX slot is 1 = enabled, 2 = overridden (always-on), 0 = disabled.
+//
+// init() sets fAlwaysOn = 1 ONLY if fController->flags_ig & FB_FLAG_BOOST_PIXEL_FREQUENCY_LIMIT.
+// If that flag isn't set before PowerWell::init runs, fAlwaysOn stays 0 → power wells can be
+// gated off at runtime. Our hook forces fAlwaysOn = 1 unconditionally on non-real-TGL hardware.
 struct AppleIntelPowerWell {
     uint8_t             _pad_0000[0x10];    // +0x00..+0x0F  vtable + padding
-    void               *fController;        // +0x10  AppleIntelBaseController* (8 bytes)
-    uint8_t             fAlwaysOn;          // +0x18  1 = overridePowerWellsState called at init end
+    AppleIntelBaseController *fController;  // +0x10  [KNOWN] (Ghidra: "contr")
+    uint8_t             fAlwaysOn;          // +0x18  [KNOWN] (Ghidra: "powerwellalwaysON") 1 = overridePowerWellsState locks wells always-on
     uint8_t             _pad_0019[3];       // +0x19..+0x1B  alignment
     uint32_t            fPGBase;            // +0x1C  base PG (always 1 after init)
     uint32_t            fPG1;              // +0x20  PG1 state  (reg 0x45404 bit 0)
@@ -227,7 +233,10 @@ struct AppleIntelBaseController {
     uint32_t       unk_0BD8;            // +0xBD8
     uint8_t        _pad_0BDC[0x64];    // +0xBDC..+0xC3F
     void          *unk_0C40;            // +0xC40  [KNOWN] RegCache pool/allocator — captured as ccont in PowerWell::init hook
-    uint8_t        _pad_0C48[0x2BC];   // +0xC48..+0xF03
+    uint8_t        _pad_0C48[0x10];    // +0xC48..+0xC57
+    uint32_t       flags_ig;           // +0xC58  [KNOWN] boot info flags (Ghidra: "flags_ig"); FB_FLAG_BOOST_PIXEL_FREQUENCY_LIMIT etc. — checked by PowerWell::init to decide fAlwaysOn
+    uint32_t       fInfoFlags2;        // +0xC5C  [KNOWN] display feature flags; FB_FLAG_ALTERNATE_PWM_INCREMENT* | FB_FLAG_ENABLE_SLICE_FEATURES etc.
+    uint8_t        _pad_0C60[0x2A4];  // +0xC60..+0xF03
     uint32_t       unk_0F04;            // +0xF04
     uint8_t        _pad_0F08[0x5]; // +0xF08
     uint32_t       unk_0F0D; // +0xF0D
@@ -248,16 +257,18 @@ struct AppleIntelBaseController {
     uint8_t        _pad_1510[0x31]; // +0x1510
     uint32_t       unk_1541; // +0x1541
     uint8_t        _pad_1545[0xAB]; // +0x1545
-    uint32_t       unk_15F0; // +0x15F0
-    uint8_t        _pad_15F4[0x523]; // +0x15F4
+    uint32_t       unk_15F0;            // +0x15F0
+    uint8_t        _pad_15F4[0x523];   // +0x15F4..+0x1B16  (fGPUIsAwake at +0x1A00 — use getMember; struct not packed)
     uint32_t       unk_1B17; // +0x1B17
     uint8_t        _pad_1B1B[0x5]; // +0x1B1B
     uint32_t       unk_1B20; // +0x1B20
     uint32_t       unk_1B24; // +0x1B24
 };
 // NOTE: total size is a lower bound; extend once the real sizeof() is known from IDA/Ghidra.
-static_assert(__builtin_offsetof(AppleIntelBaseController, fMMIO) == 0x78, "AppleIntelBaseController.fMMIO");
-static_assert(__builtin_offsetof(AppleIntelBaseController, unk_0C40) == 0xC40, "AppleIntelBaseController.unk_0C40");
+static_assert(__builtin_offsetof(AppleIntelBaseController, fMMIO)       == 0x78,  "AppleIntelBaseController.fMMIO");
+static_assert(__builtin_offsetof(AppleIntelBaseController, unk_0C40)    == 0xC40, "AppleIntelBaseController.unk_0C40");
+static_assert(__builtin_offsetof(AppleIntelBaseController, flags_ig)    == 0xC58,  "AppleIntelBaseController.flags_ig");
+static_assert(__builtin_offsetof(AppleIntelBaseController, fInfoFlags2) == 0xC5C,  "AppleIntelBaseController.fInfoFlags2");
 
 // struct AppleIntelDisplayPath -- PCode-discovered from AppleIntelDisplayPath::init, 3 access sites, ~0x32B0 bytes
 struct AppleIntelDisplayPath {

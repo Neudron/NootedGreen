@@ -1714,9 +1714,25 @@ bool Gen11::paramsSurfCompare(AppleIntel::AppleIntelBaseController *that,
 	// trigger raWriteRegister32 writes for PLANE_CTL and PLANE_STRIDE.
 	// Old (pl1/hardware) is already linear from UEFI; patching pl2 to match suppresses
 	// the X-tiled commit without any MMIO intercept.
-	if (NGreen::callback && !NGreen::callback->isRealTGL && pl2) {
+	/*if (NGreen::callback && !NGreen::callback->isRealTGL && pl2) {
 		pl2->PLANE_CTL    = (pl2->PLANE_CTL & ~(0x7u << 10));  // bits[12:10] = 000 → linear
 		pl2->PLANE_STRIDE = 0xa0;                               // 2560×4 / 64 = 160 = 0xa0
+	}*/
+	// V408: match what macOS wants — X-tiled (bits[12:10]=001) + X-tile stride.
+	// Apple's IOSurface allocator produces X-tiled buffers; V99G GGTT remap copies the
+	// PTEs to GGTT[0..3999] so SURF=0x0 scans those same physical pages.
+	// Hardware must read in X-tile to match the written layout.
+	//
+	// X-tile stride unit = 512 B.  stride = (width_px × 4 bpp) / 512 = width / 128.
+	// For 2560px: 2560 × 4 / 512 = 20 = 0x14.
+	if (!NGreen::callback->isRealTGL && pl2) {
+		pl2->PLANE_CTL = (pl2->PLANE_CTL & ~(0x7u << 10)) | (0x1u << 10);  // bits[12:10] = 001 → X-tile
+		uint32_t stride = 0x14;             // 2560px default
+		if (p2 && p2->PIPE_SRCSZ) {
+			uint32_t width = ((p2->PIPE_SRCSZ >> 16) & 0xFFFFu) + 1;
+			stride = (width * 4u) / 512u;   // X-tile stride units
+		}
+		pl2->PLANE_STRIDE = stride;
 	}
 
 	bool ret = FunctionCast(paramsSurfCompare, callback->oparamsSurfCompare)(that, p1, p2, pl1, pl2);
@@ -1736,9 +1752,16 @@ bool Gen11::paramsSurfCompare(AppleIntel::AppleIntelBaseController *that,
 	uint32_t old_src    = p1  ? p1->PIPE_SRCSZ    : 0;
 	uint32_t new_src    = p2  ? p2->PIPE_SRCSZ    : 0;
 
-	// PLANE_CTL tiling field is bits[27:23] (mask 0xF800000) per Apple's internal repr.
+	/*// PLANE_CTL tiling field is bits[27:23] (mask 0xF800000) per Apple's internal repr.
 	uint32_t old_tile = (old_ctl >> 23) & 0x1F;
 	uint32_t new_tile = (new_ctl >> 23) & 0x1F;
+	old_ctl, old_tile, old_stride, old_surf, old_src,
+	new_ctl, new_tile, new_stride, new_surf, new_src;*/
+	
+	// PLANE_CTL tiling is bits[12:10] (000=linear, 001=X-tile, 100=Tile4).
+	// Bits[27:23] are the pixel format field — not tiling.
+	uint32_t old_tile = (old_ctl >> 10) & 0x7;
+	uint32_t new_tile = (new_ctl >> 10) & 0x7;
 
 	SYSLOG("ngreen", "V401[%d]: paramsSurfCompare ret=%d | "
 		   "OLD: CTL=0x%x tile=0x%x STRIDE=0x%x SURF=0x%x SRC=0x%x | "
@@ -1951,16 +1974,16 @@ void Gen11::configureColorPipeLine(AppleIntel::AppleIntelPlane *that, AppleIntel
 // === TILING ENUM SELECTOR (active for approaches using pre-call patch) ===
 // ============================================================================
 
-#define V406_TILING_VALUE 2          // 0=X-tiled, 1=Y-tiled, 2=linear, 3+=else/linear
-// #define V406_TILING_VALUE 1       // Try Y-tiled
-// #define V406_TILING_VALUE 0       // Try X-tiled (original—likely fails)
+// #define V406_TILING_VALUE 2       // linear — CPU BAR2 compositor path
+// #define V406_TILING_VALUE 1       // Y-tiled
+#define V406_TILING_VALUE 0          // X-tiled — matches Apple IOSurface allocator
 
 // ============================================================================
 // === STRIDE FORCE (active for stride-manipulation approaches) ===
 // ============================================================================
 
-#define V406_STRIDE_FORCE_ENABLE 1              // 0=disabled, 1=force post-call
-#define V406_STRIDE_VALUE 0xa0                  // 0x14 (std X-tile), 0xa0 (linear?), 0x20, etc.
+#define V406_STRIDE_FORCE_ENABLE 0              // stride handled by paramsSurfCompare V408
+#define V406_STRIDE_VALUE 0x14                  // X-tile: 2560×4 / 512 = 20 = 0x14
 
 // ============================================================================
 // === PLANE_CTL BITS MANIPULATION (advanced—leave as 0 unless testing) ===
@@ -2958,17 +2981,19 @@ uint32_t Gen11::AppleIntelFramebufferinit(AppleIntel::AppleIntelFramebuffer *fra
 void Gen11::initPlatformWorkarounds(AppleIntel::AppleIntelBaseController *that)
 {
 	// Platform workaround flags for ADL-P (RPL-P) running under TGL driver.
-	// 0xC5C = fInfoFlags2: display feature flags
-	// ADL-P uses PCH PWM for backlight (cnp_setup_backlight confirmed in Linux syslog).
-	// Do NOT set FB_FLAG_ENABLE_BACKLIGHT_REG_CONTROL (that forces CPU-register backlight).
-	getMember<volatile uint32_t>(that, 0xC5C) =
+	// flags_ig (+0xC58): boot info flags — checked by PowerWell::init to set fAlwaysOn.
+	//   Must be set BEFORE PowerWell::init runs if we want Apple's native fAlwaysOn path.
+	//   We also force fAlwaysOn=1 in our PowerWell::init hook as belt-and-suspenders.
+	// fInfoFlags2 (+0xC5C): display feature flags.
+	//   ADL-P uses PCH PWM for backlight (cnp_setup_backlight confirmed in Linux syslog).
+	//   Do NOT set FB_FLAG_ENABLE_BACKLIGHT_REG_CONTROL (that forces CPU-register backlight).
+	that->flags_ig    = FB_FLAG_BOOST_PIXEL_FREQUENCY_LIMIT;
+	that->fInfoFlags2 =
 		FB_FLAG_ALTERNATE_PWM_INCREMENT1 |
 		FB_FLAG_ALTERNATE_PWM_INCREMENT2 |
 		FB_FLAG_ENABLE_SLICE_FEATURES    |
 		FB_FLAG_FORCE_POWER_ALWAYS_CONNECTED |
 		FB_FLAG_AVOID_FAST_LINK_TRAINING;
-	// 0xC58 = fInfoFlags (boot flags)
-	getMember<volatile uint32_t>(that, 0xC58) = FB_FLAG_BOOST_PIXEL_FREQUENCY_LIMIT;
 
 	FunctionCast(initPlatformWorkarounds, callback->oinitPlatformWorkarounds)(that);
 
@@ -3392,19 +3417,20 @@ void Gen11::AppleIntelPowerWellinit(AppleIntel::AppleIntelPowerWell *that, Apple
 
 	FunctionCast(AppleIntelPowerWellinit, callback->oAppleIntelPowerWellinit)(that, param_1);
 
-	// Apple only sets fAlwaysOn if controller flags at +0x918 or +0xC59 are set.
-	// Those flags are never set on RPL/ADL, so fAlwaysOn stays 0 and Apple is free
-	// to disable power wells at runtime.  Force it to 1 so that any subsequent
-	// overridePowerWellsState call locks them always-on.
-	// Also re-stamp fMMIO = ccont as belt-and-suspenders; the callthrough should have
-	// done this but our ccont is the authoritative value captured before the call.
+	// Apple's PowerWell::init checks fController->flags_ig & FB_FLAG_BOOST_PIXEL_FREQUENCY_LIMIT
+	// (+0xC58) before setting fAlwaysOn=1. On RPL/ADL that flag isn't set when the kext first
+	// calls PowerWell::init (initPlatformWorkarounds runs later), so fAlwaysOn stays 0 and
+	// Apple can gate power wells off. We force fAlwaysOn=1 unconditionally on non-real-TGL.
+	// Also re-stamp fMMIO = ccont; the callthrough should have done this but ours is authoritative.
+	SYSLOG("ngreen", "PowerWell::init — flags_ig=0x%x fAlwaysOn(before)=%u",
+		   param_1->flags_ig, that->fAlwaysOn);
 	if (!NGreen::callback->isRealTGL) {
 		that->fAlwaysOn = 1;
 		that->fMMIO     = ccont;
 		SYSLOG("ngreen", "PowerWell::init forced fAlwaysOn=1, fMMIO stamped");
 	}
-	SYSLOG("ngreen", "PowerWell::init done — PG1=%u PG2=%u PG3=%u PG4=%u DDI[0]=%u AUX[0]=%u",
-		   that->fPG1, that->fPG2, that->fPG3, that->fPG4, that->fDDI[0], that->fAUX[0]);
+	SYSLOG("ngreen", "PowerWell::init done — fAlwaysOn=%u PG1=%u PG2=%u PG3=%u PG4=%u DDI[0]=%u AUX[0]=%u",
+		   that->fAlwaysOn, that->fPG1, that->fPG2, that->fPG3, that->fPG4, that->fDDI[0], that->fAUX[0]);
 }
 
 // ─── Sleep/wake lifecycle hooks ──────────────────────────────────────────────
@@ -3417,12 +3443,25 @@ void Gen11::AppleIntelPowerWellinit(AppleIntel::AppleIntelPowerWell *that, Apple
 //   Sleep: prepareToEnterSleep → prepareToExitWake
 //   Wake:  prepareToExitSleep  → prepareToEnterWake
 
+static void logFBCtrlState(const char *tag, AppleIntel::AppleIntelFramebuffer *that)
+{
+	auto *ctrl = that->fController;
+	uint32_t fbState = getMember<uint32_t>(that, 0x49e0);
+	if (ctrl) {
+		SYSLOG("ngreen", "%s fb=%p fbState=%u flags_ig=0x%x fInfoFlags2=0x%x fGPUIsAwake=%u pipe=%u",
+			   tag, that, fbState,
+			   ctrl->flags_ig, ctrl->fInfoFlags2, getMember<uint32_t>(ctrl, 0x1A00),
+			   that->fPipeIndex);
+	} else {
+		SYSLOG("ngreen", "%s fb=%p fbState=%u ctrl=NULL pipe=%u", tag, that, fbState, that->fPipeIndex);
+	}
+}
+
 // Wake stage 2: confirm panel is on, log state.
 // Apple does: panel-power property, some vtable dispatch, then state=4.
 void Gen11::prepareToEnterWake(AppleIntel::AppleIntelFramebuffer *that)
 {
-	uint32_t state_before = getMember<uint32_t>(that, 0x49e0);
-	DBGLOG("ngreen", "prepareToEnterWake enter: fb=%p state=0x%x", that, state_before);
+	logFBCtrlState("prepareToEnterWake>>", that);
 	bool panelOn = isPanelPowerOn(getMember<void *>(that, 0x1d0));
 	if (panelOn) {
 		reinterpret_cast<IORegistryEntry *>(that)->setProperty("AAPL,LCD-PowerState-ON", true);
@@ -3433,15 +3472,14 @@ void Gen11::prepareToEnterWake(AppleIntel::AppleIntelFramebuffer *that)
 		SYSLOG("ngreen", "prepareToEnterWake: state=0x%x (expected 4), forcing", state_after);
 		getMember<uint32_t>(that, 0x49e0) = 4;
 	}
-	DBGLOG("ngreen", "prepareToEnterWake exit: state=0x%x", getMember<uint32_t>(that, 0x49e0));
+	logFBCtrlState("prepareToEnterWake<<", that);
 }
 
 // Sleep stage 2: NVRAM save, Camellia backlight off, StopTransactions,
 // disableDisplay, hwSetPanelPower(0), two handleEvent calls, then state=4.
 void Gen11::prepareToExitWake(AppleIntel::AppleIntelFramebuffer *that)
 {
-	uint32_t state_before = getMember<uint32_t>(that, 0x49e0);
-	DBGLOG("ngreen", "prepareToExitWake enter: fb=%p state=0x%x", that, state_before);
+	logFBCtrlState("prepareToExitWake>>", that);
 	reinterpret_cast<IORegistryEntry *>(that)->setProperty("AAPL,LCD-PowerState-ON", false);
 	FunctionCast(prepareToExitWake, callback->oprepareToExitWake)(that);
 	uint32_t state_after = getMember<uint32_t>(that, 0x49e0);
@@ -3449,15 +3487,14 @@ void Gen11::prepareToExitWake(AppleIntel::AppleIntelFramebuffer *that)
 		SYSLOG("ngreen", "prepareToExitWake: state=0x%x (expected 4), forcing", state_after);
 		getMember<uint32_t>(that, 0x49e0) = 4;
 	}
-	DBGLOG("ngreen", "prepareToExitWake exit: state=0x%x", getMember<uint32_t>(that, 0x49e0));
+	logFBCtrlState("prepareToExitWake<<", that);
 }
 
 // Sleep stage 1: fSleeping=1, cancel timers, clientNotify(2,0), state=4,
 // handleEvent(sleep), hwSaveState, hwDisableInterrupts, fGPUIsAwake=0.
 void Gen11::prepareToEnterSleep(AppleIntel::AppleIntelFramebuffer *that)
 {
-	uint32_t state_before = getMember<uint32_t>(that, 0x49e0);
-	DBGLOG("ngreen", "prepareToEnterSleep enter: fb=%p state=0x%x", that, state_before);
+	logFBCtrlState("prepareToEnterSleep>>", that);
 	reinterpret_cast<IORegistryEntry *>(that)->setProperty("AAPL,LCD-PowerState-ON", false);
 	FunctionCast(prepareToEnterSleep, callback->oprepareToEnterSleep)(that);
 	uint32_t state_after = getMember<uint32_t>(that, 0x49e0);
@@ -3465,7 +3502,7 @@ void Gen11::prepareToEnterSleep(AppleIntel::AppleIntelFramebuffer *that)
 		SYSLOG("ngreen", "prepareToEnterSleep: state=0x%x (expected 4), forcing", state_after);
 		getMember<uint32_t>(that, 0x49e0) = 4;
 	}
-	DBGLOG("ngreen", "prepareToEnterSleep exit: state=0x%x", getMember<uint32_t>(that, 0x49e0));
+	logFBCtrlState("prepareToEnterSleep<<", that);
 }
 
 // Wake stage 1: restorePowerWellsState, hwEnableInterrupts, hwInitializeCState,
@@ -3473,18 +3510,15 @@ void Gen11::prepareToEnterSleep(AppleIntel::AppleIntelFramebuffer *that)
 // clientNotify(2,1), handleEvent(wake), fGPUIsAwake=1, setDPPowerState, state=4.
 void Gen11::prepareToExitSleep(AppleIntel::AppleIntelFramebuffer *that)
 {
-	uint32_t state_before = getMember<uint32_t>(that, 0x49e0);
-	DBGLOG("ngreen", "prepareToExitSleep enter: fb=%p state=0x%x", that, state_before);
+	logFBCtrlState("prepareToExitSleep>>", that);
 	FunctionCast(prepareToExitSleep, callback->oprepareToExitSleep)(that);
 	uint32_t state_after = getMember<uint32_t>(that, 0x49e0);
 	if (state_after != 4) {
 		SYSLOG("ngreen", "prepareToExitSleep: state=0x%x (expected 4), forcing", state_after);
 		getMember<uint32_t>(that, 0x49e0) = 4;
 	}
-	// fGPUIsAwake is at controller + 0x1a00 offset ((&DAT_00001a00)[ctrl]).
-	// Apple sets it to 1 inside the callthrough; we track panel as on after wake.
 	reinterpret_cast<IORegistryEntry *>(that)->setProperty("AAPL,LCD-PowerState-ON", true);
-	DBGLOG("ngreen", "prepareToExitSleep exit: state=0x%x", getMember<uint32_t>(that, 0x49e0));
+	logFBCtrlState("prepareToExitSleep<<", that);
 }
 
 bool Gen11::AppleIntelBaseControllerstart(AppleIntel::AppleIntelBaseController *that, IOService *param_1)

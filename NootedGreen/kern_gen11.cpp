@@ -4637,11 +4637,19 @@ uint8_t  Gen11::IGHardwareExtendedContextinitWithOptions(void *that,void *param_
 		}
 		return 0;
 	}
+	void *b8pre = getMember<void *>(that, 0xb8);
 	uint8_t ret = FunctionCast(IGHardwareExtendedContextinitWithOptions, callback->oIGHardwareExtendedContextinitWithOptions)(that,param_1,param_2);
+	void *b8post = getMember<void *>(that, 0xb8);
 	// V115 REMOVED: V115 suppressed initWithOptions to prevent MCE from GGTT[0]→stolen mem.
 	// V116 now remaps GGTT[0] to a safe dummy page, so the MCE can't happen.
 	// V115 was causing Apple's (un-hooked) getBlit3DContext to return nullptr, which then
 	// made submitBlit+0x28e dereference nullptr+0xb8 → page fault. Pass through real result.
+	static int v501Count = 0;
+	if (v501Count < 8) {
+		v501Count++;
+		SYSLOG("ngreen", "V501[%d]: initWithOptions(%p) ret=%u b8_pre=%p b8_post=%p p1=%p p2=%p",
+			   v501Count, that, ret, b8pre, b8post, param_1, param_2);
+	}
 	return ret;
 	
 	uint8_t ctx=getMember<uint8_t>(that, 0x6c);

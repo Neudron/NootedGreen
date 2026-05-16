@@ -4200,7 +4200,10 @@ void *Gen11::createUserGPUTask(void *that)
 		if (taskCtx)
 			return taskCtx;
 
-		void *ctx = callback->getBlit3DContext(task, false);
+		// param_1=true required: getBlit3DContext only allocates the context when true.
+		// With false it only reads task+0x298 — NULL until a true-call creates it.
+		// (decompiled: `if ((task+0x298 == NULL) && param_1) { alloc+initWithOptions; }`)
+		void *ctx = callback->getBlit3DContext(task, true);
 		if (!ctx)
 			return nullptr;
 
@@ -4267,7 +4270,10 @@ void *Gen11::igAccelTaskWithOptions(void *that)
 		if (taskCtx)
 			return taskCtx;
 
-		void *ctx = callback->getBlit3DContext(task, false);
+		// param_1=true required: getBlit3DContext only allocates the context when true.
+		// With false it only reads task+0x298 — NULL until a true-call creates it.
+		// (decompiled: `if ((task+0x298 == NULL) && param_1) { alloc+initWithOptions; }`)
+		void *ctx = callback->getBlit3DContext(task, true);
 		if (!ctx)
 			return nullptr;
 
@@ -4380,10 +4386,14 @@ void * Gen11::getBlit3DContext(void *that,bool param_1)
 			   "tier1_pre=0x%x tier1_post=0x%x ERROR_GEN6=0x%x",
 			   ctx, b8, v148r_rcIntrPre, v148r_rc, v148r_err);
 
-		// V148R retry: if first call failed and tier-1 was disabled (interrupt couldn't fire),
-		// sleep 3s to let the ring settle and watchdog run, then retry with tier-1 now enabled.
-		if (!NGreen::callback->isRealTGL) {
-			SYSLOG("ngreen", "V148R: sleeping 3s then retrying (letting ring settle + watchdog run)");
+		// V148R retry: one-shot sleep+retry on very first failure only.
+		// IMPORTANT: Do NOT repeat this sleep on subsequent calls — getBlit3DContext is called
+		// 9–24 times per session; sleeping 3s each time blocks the display compositor thread
+		// for 27+ seconds, causing repeated visible screen blanks/restarts.
+		static bool v148rSleepDone = false;
+		if (!NGreen::callback->isRealTGL && !v148rSleepDone) {
+			v148rSleepDone = true;
+			SYSLOG("ngreen", "V148R: sleeping 3s then retrying (one-shot, letting ring settle + watchdog run)");
 			IOSleep(3000);
 			// Re-ensure tier-1 is still enabled after the sleep
 			uint32_t rcNow = NGreen::callback->readReg32(GEN11_RENDER_COPY_INTR_ENABLE);

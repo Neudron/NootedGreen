@@ -340,6 +340,11 @@ void DYLDPatches::wrapCsValidatePage(vnode *vp, memory_object_t pager, memory_ob
 			// run. Trade-off: loses the RunFullDisplayPipe isRemovable crash
 			// guard under forceFullMTL — re-add it (with its own gate) if RFDP
 			// hits a NULL vcall on spoofed hardware in that mode.
+			// DISABLED (2026-05-16): GFX pipeline is now robust enough that MetalDevice may
+			// be validly constructed. Stubbing these to NULL blocks real Metal compositing
+			// while other WS code still tries to drive the MTL path → MTLCompilerService
+			// abort loop. Re-enable only if objc_msgSend crashes on a NULL mtlDevice.
+			/*
 			const DYLDPatch getMtlTextureSafetyPatch[] = {
 				{f_getmtltex_sonoma, r_getmtltex_sonoma, "GetMTLTexture return NULL (Sonoma)"},
 			};
@@ -349,6 +354,7 @@ void DYLDPatches::wrapCsValidatePage(vnode *vp, memory_object_t pager, memory_ob
 				{f_getmtlcq_sonoma, r_getmtlcq_sonoma, "GetMTLCommandQueue return NULL (Sonoma)"},
 			};
 			DYLDPatch::applyAll(getMtlCommandQueueSafetyPatch, const_cast<void *>(data), PAGE_SIZE);
+			*/
 
 			const DYLDPatch isRemovableGuardPatch[] = {
 				{f_isrm_guard_sonoma, r_isrm_guard_sonoma, "RunFullDisplayPipe isRemovable crash guard (Sonoma)"},

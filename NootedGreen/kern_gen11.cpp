@@ -4268,11 +4268,26 @@ unsigned long Gen11::start(void *that,void  *param_1)
 	}
 	if (rcsStart) {
 		uint32_t ringPage = rcsStart >> 12;
-		SYSLOG("ngreen", "GGTT PTE for RING (page 0x%x)=0x%08x:%08x", ringPage,
-			NGreen::callback->readReg32(GGTT_PTE_HI(ringPage)),
-			NGreen::callback->readReg32(GGTT_PTE_LO(ringPage)));
+		uint32_t rpteHi = NGreen::callback->readReg32(GGTT_PTE_HI(ringPage));
+		uint32_t rpteLo = NGreen::callback->readReg32(GGTT_PTE_LO(ringPage));
+		SYSLOG("ngreen", "GGTT PTE for RING (page 0x%x)=0x%08x:%08x", ringPage, rpteHi, rpteLo);
+
+		// V505: dump ring preamble contents via physical address.
+		// HEAD=0x40 (16 dwords) means the preamble ran then WM/CS stalled.
+		// physBase = PTE bits [51:12] → physical page base.
+		static int v505DumpCount = 0;
+		if (v505DumpCount < 3 && (rpteLo & 1)) {
+			v505DumpCount++;
+			uint64_t physBase = ((uint64_t)rpteHi << 32) | (rpteLo & 0xFFFFF000u);
+			SYSLOG("ngreen", "V505[%d]: ring phys=0x%llx HEAD=0x%x TAIL=0x%x — dumping 32 dwords:",
+				   v505DumpCount, (unsigned long long)physBase, rcsHead, rcsTail);
+			for (int i = 0; i < 32; i++) {
+				uint32_t dw = IOMappedRead32(physBase + (uint64_t)(i * 4));
+				SYSLOG("ngreen", "V505[%d]:  [%02d] +0x%02x = 0x%08x", v505DumpCount, i, i * 4, dw);
+			}
+		}
 	}
-	
+
 	// CSB entries
 	uint32_t csp = NGreen::callback->readReg32(RING_CONTEXT_STATUS_PTR(RENDER_RING_BASE));
 	SYSLOG("ngreen", "CSB wr_ptr=%d rd_ptr=%d", (csp >> 8) & 0x7, csp & 0x7);

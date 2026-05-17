@@ -156,7 +156,11 @@ static bool isDisplayPipeForceDisabled() {
 		return true;
 	}
 
-	SYSLOG("ngreen", "V78A: default native DisplayPipeSupported ON (GPU display pipe active — use -ngreendp0 to fall back to CPU path)");
+	static bool v78aLogged = false;
+	if (!v78aLogged) {
+		v78aLogged = true;
+		SYSLOG("ngreen", "V78A (capped): default native DisplayPipeSupported ON");
+	}
 	return false;
 }
 
@@ -914,7 +918,7 @@ bool Gen11::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 				// resetGraphicsEngine NOT routed: NBlue wrapper applies TGL GT workarounds which
 				// target TGL MMIO offsets. Hardware is RPL-P (adlp/raptorlake) — using TGL workarounds
 				// on RPL MMIO could corrupt the command streamer. Let the ICL original run unmodified.
-				{"__ZN20IGHardwareRingBuffer19resetGraphicsEngineEP17IGHardwareContext", resetGraphicsEngine, this->oresetGraphicsEngine},
+			//symbol absent in kext	{"__ZN20IGHardwareRingBuffer19resetGraphicsEngineEP17IGHardwareContext", resetGraphicsEngine, this->oresetGraphicsEngine},
 				//last	 {"__ZN13IGHardwareGuC18checkWOPCMSettingsEmR14IOVirtualRange", checkWOPCMSettings, this->ocheckWOPCMSettings},
 				//last	 {"__ZN11IGScheduler15canLoadFirmwareEP16IntelAccelerator", canLoadFirmware, this->ocanLoadFirmware},
 				 // V36: Hook readAndClearInterrupts to initialize Gen11 multi-engine GT interrupts.
@@ -1016,12 +1020,13 @@ bool Gen11::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 			 {"__ZN16IntelAccelerator20_PAVPCommandCallbackEP8OSObject22PAVPSessionCommandID_tjPj", wrapPavpSessionCallback, this->orgPavpSessionCallback},
 			
 			// V163: Hook startGraphicsEngine to clear PERCTX_PREEMPT_CTRL (FF_SLICE_CS_CHICKEN1 bit 14)
-		 // immediately after the TGL kext enables it. The TGL kext writes 0x40004000 to reg 0x20E0
-		 // (mask=bit14, value=bit14=1). On RPL this causes the EU thread dispatcher to freeze on
-		 // first context switch because hardware snapshots the register into the context image DMA
-		 // buffer — clearing it here, before any execlist context is created, prevents the bad
-		 // value from ever reaching the DMA buffer.
+			// immediately after the TGL kext enables it. The TGL kext writes 0x40004000 to reg 0x20E0
+			// (mask=bit14, value=bit14=1). On RPL this causes the EU thread dispatcher to freeze on
+			// first context switch because hardware snapshots the register into the context image DMA
+			// buffer — clearing it here, before any execlist context is created, prevents the bad
+			// value from ever reaching the DMA buffer.
 		 	{"__ZN16IntelAccelerator19startGraphicsEngineEv", startGraphicsEngine, this->ostartGraphicsEngine},
+			{"__ZN16IntelAccelerator18stopGraphicsEngineEv",  stopGraphicsEngine,  this->ostopGraphicsEngine},
 
 			// V164: Hook populateResetRegisterList which reads live MMIO values into the per-context
 			// replay list (a batch of MI_LRI commands executed before every context switch).
@@ -4272,20 +4277,6 @@ unsigned long Gen11::start(void *that,void  *param_1)
 		uint32_t rpteLo = NGreen::callback->readReg32(GGTT_PTE_LO(ringPage));
 		SYSLOG("ngreen", "GGTT PTE for RING (page 0x%x)=0x%08x:%08x", ringPage, rpteHi, rpteLo);
 
-		// V505: dump ring preamble contents via physical address.
-		// HEAD=0x40 (16 dwords) means the preamble ran then WM/CS stalled.
-		// physBase = PTE bits [51:12] → physical page base.
-		static int v505DumpCount = 0;
-		if (v505DumpCount < 3 && (rpteLo & 1)) {
-			v505DumpCount++;
-			uint64_t physBase = ((uint64_t)rpteHi << 32) | (rpteLo & 0xFFFFF000u);
-			SYSLOG("ngreen", "V505[%d]: ring phys=0x%llx HEAD=0x%x TAIL=0x%x — dumping 32 dwords:",
-				   v505DumpCount, (unsigned long long)physBase, rcsHead, rcsTail);
-			for (int i = 0; i < 32; i++) {
-				uint32_t dw = IOMappedRead32(physBase + (uint64_t)(i * 4));
-				SYSLOG("ngreen", "V505[%d]:  [%02d] +0x%02x = 0x%08x", v505DumpCount, i, i * 4, dw);
-			}
-		}
 	}
 
 	// CSB entries
@@ -4926,15 +4917,21 @@ void Gen11::populateResetRegisterList(void *that)
 		uint8_t *data  = reinterpret_cast<uint8_t*>(accel->fResetRegData);
 		static int v504CallCount = 0;
 		++v504CallCount;
-		SYSLOG("ngreen", "V504[%d]: IGVector count=%llu data=%p", v504CallCount,
-			   (unsigned long long)count, data);
+		bool v504Verbose = (v504CallCount <= 3);
+		if (v504Verbose)
+			SYSLOG("ngreen", "V504[%d]: IGVector count=%llu data=%p", v504CallCount,
+				   (unsigned long long)count, data);
 		for (uint64_t i = 0; i < count; i++) {
 			uint32_t *entry = reinterpret_cast<uint32_t*>(data + i * 0x24);
 			uint32_t  addr  = entry[0];
-			// CS_DEBUG_MODE1: clear bits 0+4 (TGL replay mode bits, stall CS on RPL-P)
-			if (addr == 0x20ec) { entry[1] = 0x00000000; SYSLOG("ngreen", "V504[%d]: patched CS_DEBUG_MODE1 → 0", v504CallCount); }
-			// CS_CHICKEN1: keep bit1 only (threadgroup preemption), clear bit0 (TGL-only command level)
-			if (addr == 0x2580) { entry[1] = 0x00000002; SYSLOG("ngreen", "V504[%d]: patched CS_CHICKEN1 → 0x2", v504CallCount); }
+			if (addr == 0x20ec) {
+				entry[1] = 0x00000000;
+				if (v504Verbose) SYSLOG("ngreen", "V504[%d]: patched CS_DEBUG_MODE1 → 0", v504CallCount);
+			}
+			if (addr == 0x2580) {
+				entry[1] = 0x00000002;
+				if (v504Verbose) SYSLOG("ngreen", "V504[%d]: patched CS_CHICKEN1 → 0x2", v504CallCount);
+			}
 		}
 	}
 }
@@ -5369,320 +5366,171 @@ unsigned long Gen11::startGraphicsEngine(void *that)
 	return ret;
 }
 
-unsigned long Gen11::resetGraphicsEngine(void *that,void *param_1)
+// stopGraphicsEngine is the real GPU reset entry point on this binary (resetGraphicsEngine
+// symbol is absent). All GT workarounds, error clearing, BCS drain, ring snapshots, GDRST,
+// and PERCTX_PREEMPT_CTRL clear that lived in resetGraphicsEngine are ported here.
+unsigned long Gen11::stopGraphicsEngine(void *that)
 {
-	static int v63ResetCount = 0;
-	static int v154ConsecQuiescentFails = 0;
-	static uint32_t v155SavedRcsCtl = 0;  // last non-zero RCS CTL seen before a reset
-	v63ResetCount++;
-	SYSLOG("ngreen", "V63: resetGraphicsEngine call #%d (consec_q=%d)", v63ResetCount, v154ConsecQuiescentFails);
-	
-	//GT workarounds: the list of these WAs is applied whenever these registers
-	//*   revert to their default values: on GPU reset, suspend/resume [1]_, etc.
-	//gen12_gt_workarounds_init
-	/* Wa_14011060649:tgl,rkl,dg1,adl-s,adl-p */
-	//wa_14011060649(gt, wal);
-	
-	NGreen::callback->wa_write_or( VDBOX_CGCTL3F10(RENDER_RING_BASE), IECPUNIT_CLKGATE_DIS);
-	NGreen::callback->wa_write_or( VDBOX_CGCTL3F10(BLT_RING_BASE), IECPUNIT_CLKGATE_DIS);
-	NGreen::callback->wa_write_or( VDBOX_CGCTL3F10(GEN11_VEBOX_RING_BASE), IECPUNIT_CLKGATE_DIS);
+	static int   v63ResetCount            = 0;
+	static uint32_t v155SavedRcsCtl       = 0;
+	static int   v164GdrstCount           = 0;
+	static int   v505Count                = 0;
 
-	/* Wa_14011059788:tgl,rkl,adl-s,dg1,adl-p */
-	NGreen::callback->wa_mcr_write_or( GEN10_DFR_RATIO_EN_AND_CHICKEN, DFR_DISABLE);
-
-	/*
-	 * Wa_14015795083
-	 */
-	NGreen::callback->wa_add( GEN7_MISCCPCTL, GEN12_DOP_CLOCK_GATE_RENDER_ENABLE,
-		   0, 0, false);
-	
-	// V25: GT slice/engine workarounds moved here from AppleIntelBaseControllerstart.
-	// These registers are in the GT power domain (0x0-0x7FFF) and need ForceWake to be held.
-	// resetGraphicsEngine is called during ring init when ForceWake IS held.
-	
-	/* Wa_1409142259:tgl,dg1,adl-p - disable CPS aware color pipe */
-	NGreen::callback->wa_masked_en(GEN11_COMMON_SLICE_CHICKEN3,
-			GEN12_DISABLE_CPS_AWARE_COLOR_PIPE);
-
-	/* WaDisableGPGPUMidThreadPreemption:gen12 */
-	NGreen::callback->wa_masked_field_set(GEN8_CS_CHICKEN1,
-				GEN9_PREEMPT_GPGPU_LEVEL_MASK,
-				GEN9_PREEMPT_GPGPU_THREAD_GROUP_LEVEL);
-
-	// MCR selector: target slice 0, subslice 0 (known valid on RPL-P with 1 slice)
-	uint32_t mcr = GEN8_MCR_SLICE(0) | GEN8_MCR_SUBSLICE(0);
-	uint32_t mcr_mask = GEN8_MCR_SLICE_MASK | GEN8_MCR_SUBSLICE_MASK;
-	NGreen::callback->wa_write_clr_set(GEN8_MCR_SELECTOR, mcr_mask, mcr);
-	
-	/* rcs_engine_wa_init - per-context preemption control */
-	NGreen::callback->wa_masked_en(GEN7_FF_SLICE_CS_CHICKEN1,
-			GEN9_FFSC_PERCTX_PREEMPT_CTRL);
-	
-	SYSLOG("ngreen", "resetGraphicsEngine: GT workarounds applied (with ForceWake)");
-
-	// V71: Pre-reset error suppression — clear ERROR_GEN6 and mask EMR before
-	// calling original, so the reset handler starts from a clean error state.
-	{
-		uint32_t preErr = NGreen::callback->readReg32(ERROR_GEN6);
-		if (preErr) {
-			NGreen::callback->writeReg32(ERROR_GEN6, 0x0);
-			SYSLOG("ngreen", "V71: resetGfxEng pre-clear ERR=0x%x", preErr);
-		}
-		NGreen::callback->writeReg32(RING_EMR(RENDER_RING_BASE), 0xFFFFFFFF);
-		NGreen::callback->writeReg32(RING_EMR(BLT_RING_BASE), 0xFFFFFFFF);
-	}
-
-	// V158: drain CSB read pointer after any fake-success return.
-	//
-	// V159 confirmed CTX_CTRL is read-only while EL0 is active:
-	// writing CTX_CTRL_FORCE_ABANDON (0x0D) was silently ignored — 0x10->0x10 on readback.
-	// Hardware only evicts the stuck ring-init EL0 context via a domain reset (GDRST).
-	// V164 (below, inside ret==1025) fires GDRST when the ghost condition is detected;
-	// this lambda is just CSB drain.
-	auto v158_drainCSB = [&]() {
-		// Advance CSB read pointer to write pointer — consume all pending status entries.
-		uint32_t csbReg   = NGreen::callback->readReg32(RING_CONTEXT_STATUS_PTR(RENDER_RING_BASE));
-		uint32_t csbWrite = (csbReg >> 8) & 0xff;
-		uint32_t csbRead  = csbReg & 0xff;
-		if (csbRead != csbWrite) {
-			NGreen::callback->writeReg32(RING_CONTEXT_STATUS_PTR(RENDER_RING_BASE),
-										  (csbWrite << 8) | csbWrite);
-		}
-		uint32_t execNow = NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE));
-		SYSLOG("ngreen", "V160[%d]: CSB rp %d->%d, EXEC=0x%x",
-			   v63ResetCount, csbRead, csbWrite, execNow);
-	};
-
-	// V154: RPL-only circuit-breaker — after 3 consecutive quiescent ret=1025 resets,
-	// skip calling the original entirely. The health monitor (V60M) calls us every 2s
-	// for up to 120s; if hardware is already quiescent and the original always returns
-	// 1025, those 60 calls waste the entire watchdog budget. Short-circuiting them lets
-	// WindowServer continue and prevents the watchdog from firing.
-	if (!NGreen::callback->isRealTGL && v154ConsecQuiescentFails >= 3) {
-		uint32_t rCtl  = NGreen::callback->readReg32(RING_CTL(RENDER_RING_BASE));
-		uint32_t rHead = NGreen::callback->readReg32(RING_HEAD(RENDER_RING_BASE));
-		uint32_t rTail = NGreen::callback->readReg32(RING_TAIL(RENDER_RING_BASE));
-		uint32_t bCtl  = NGreen::callback->readReg32(RING_CTL(BLT_RING_BASE));
-		uint32_t bHead = NGreen::callback->readReg32(RING_HEAD(BLT_RING_BASE));
-		uint32_t bTail = NGreen::callback->readReg32(RING_TAIL(BLT_RING_BASE));
-		uint32_t err   = NGreen::callback->readReg32(ERROR_GEN6);
-		// V156: drop rCtl==0 / bCtl==0 requirement — V155 restores CTL to 0x7000/0x7001
-		// before this check, so the ring is no longer disabled. Quiescence only
-		// requires HEAD==TAIL (empty queue) and no pending errors.
-		if (rHead == rTail && bHead == bTail && err == 0) {
-			// V155: re-enable the RCS ring before returning fake success.
-			// Use | 1 to force RING_ENABLE (bit 0) — hardware clears it after write,
-			// so subsequent snapshots read 0x7000 instead of 0x7001; always restore
-			// with RING_ENABLE set or the ring DMA stays disabled.
-			if (v155SavedRcsCtl != 0) {
-				NGreen::callback->writeReg32(RING_CTL(RENDER_RING_BASE), v155SavedRcsCtl | 1);
-			}
-			SYSLOG("ngreen", "V154[%d]: circuit-open — skipping original reset (%d consec quiescent fails, rCtl=0x%x rHead=0x%x bHead=0x%x restored CTL=0x%x)",
-				   v63ResetCount, v154ConsecQuiescentFails, rCtl, rHead, bHead, v155SavedRcsCtl | 1);
-			v158_drainCSB();
-			// V162: Clear PERCTX_PREEMPT_CTRL — TGL context image sets bit 14;
-			// RPL EU thread dispatcher freezes with this bit enabled.
-			NGreen::callback->writeReg32(GEN7_FF_SLICE_CS_CHICKEN1,
-				(GEN9_FFSC_PERCTX_PREEMPT_CTRL << 16) | 0);
-			return 0;
-		}
-		// State changed — open circuit no longer valid, reset counter
-		v154ConsecQuiescentFails = 0;
-		SYSLOG("ngreen", "V154[%d]: circuit reset (non-quiescent state detected)", v63ResetCount);
-	}
-
-	// V152: On RPL spoof, drain/disable the BCS ring before calling the original
-	// resetGraphicsEngine. The BCS ring gets initialized by IGHardwareCommandStreamer5
-	// during deviceStart, but RPL cannot execute those commands (BCS is incompatible).
-	// Result: BCS HEAD != TAIL permanently (HEAD=0x300, TAIL=0x388 — 0x88 stuck bytes),
-	// which causes Apple's original reset to return 1025 (failure) every single time.
-	// That failure triggers another reset → infinite loop of 115+ calls → watchdog fires.
-	// Fix: collapse TAIL back to HEAD (drop pending BCS commands) and then disable
-	// the ring (CTL=0) so the original reset sees a clean BCS state and can succeed.
 	if (!NGreen::callback->isRealTGL) {
-		uint32_t bcsTail = NGreen::callback->readReg32(RING_TAIL(BLT_RING_BASE));
-		uint32_t bcsHead = NGreen::callback->readReg32(RING_HEAD(BLT_RING_BASE));
-		uint32_t bcsCtl  = NGreen::callback->readReg32(RING_CTL(BLT_RING_BASE));
-		if (bcsCtl != 0 || bcsHead != bcsTail) {
-			// Drain: set TAIL to HEAD so software queue is considered empty.
-			if (bcsHead != bcsTail) {
-				NGreen::callback->writeReg32(RING_TAIL(BLT_RING_BASE), bcsHead);
-				SYSLOG("ngreen", "V152[%d]: BCS drain: TAIL 0x%x->0x%x (HEAD=0x%x CTL=0x%x)",
-					   v63ResetCount, bcsTail, bcsHead, bcsHead, bcsCtl);
-			}
-			// Disable BCS ring so original reset doesn't get confused by it
-			NGreen::callback->writeReg32(RING_CTL(BLT_RING_BASE), 0x0);
-			SYSLOG("ngreen", "V152[%d]: BCS disabled pre-reset (CTL was 0x%x)", v63ResetCount, bcsCtl);
-		}
-	}
+		v63ResetCount++;
 
-	// V155: Capture RCS CTL while the ring is still intact (before original disables it).
-	// Always OR with 1 so the saved value includes RING_ENABLE — hardware reads bit 0 back
-	// as 0 once the ring is running ('write-to-enable, reads as 0'), but we must write 1
-	// to actually enable the ring when we restore it.
-	{
-		uint32_t ctlNow = NGreen::callback->readReg32(RING_CTL(RENDER_RING_BASE));
-		if (ctlNow != 0)
-			v155SavedRcsCtl = ctlNow | 1;
-	}
+		// ── GT workarounds (gen12_gt_workarounds_init / rcs_engine_wa_init) ──
+		// Applied on every reset — same set as Linux i915 for TGL/ADL-P.
+		/* Wa_14011060649:tgl,rkl,dg1,adl-s,adl-p */
+		NGreen::callback->wa_write_or(VDBOX_CGCTL3F10(RENDER_RING_BASE), IECPUNIT_CLKGATE_DIS);
+		NGreen::callback->wa_write_or(VDBOX_CGCTL3F10(BLT_RING_BASE),    IECPUNIT_CLKGATE_DIS);
+		NGreen::callback->wa_write_or(VDBOX_CGCTL3F10(GEN11_VEBOX_RING_BASE), IECPUNIT_CLKGATE_DIS);
+		/* Wa_14011059788:tgl,rkl,adl-s,dg1,adl-p */
+		NGreen::callback->wa_mcr_write_or(GEN10_DFR_RATIO_EN_AND_CHICKEN, DFR_DISABLE);
+		/* Wa_14015795083 */
+		NGreen::callback->wa_add(GEN7_MISCCPCTL, GEN12_DOP_CLOCK_GATE_RENDER_ENABLE, 0, 0, false);
+		/* Wa_1409142259:tgl,dg1,adl-p */
+		NGreen::callback->wa_masked_en(GEN11_COMMON_SLICE_CHICKEN3, GEN12_DISABLE_CPS_AWARE_COLOR_PIPE);
+		/* WaDisableGPGPUMidThreadPreemption:gen12 */
+		NGreen::callback->wa_masked_field_set(GEN8_CS_CHICKEN1,
+				GEN9_PREEMPT_GPGPU_LEVEL_MASK, GEN9_PREEMPT_GPGPU_THREAD_GROUP_LEVEL);
+		/* MCR selector: slice 0, subslice 0 */
+		NGreen::callback->wa_write_clr_set(GEN8_MCR_SELECTOR,
+				GEN8_MCR_SLICE_MASK | GEN8_MCR_SUBSLICE_MASK,
+				GEN8_MCR_SLICE(0) | GEN8_MCR_SUBSLICE(0));
+		/* rcs_engine_wa_init */
+		NGreen::callback->wa_masked_en(GEN7_FF_SLICE_CS_CHICKEN1, GEN9_FFSC_PERCTX_PREEMPT_CTRL);
 
-	// V53: Snapshot engine state BEFORE original resetGraphicsEngine
-	SYSLOG("ngreen", "V53 resetGfxEng PRE: RCS CTL=0x%x HEAD=0x%x TAIL=0x%x EXEC=0x%x (V155 saved=0x%x)",
-		NGreen::callback->readReg32(RING_CTL(RENDER_RING_BASE)),
-		NGreen::callback->readReg32(RING_HEAD(RENDER_RING_BASE)),
-		NGreen::callback->readReg32(RING_TAIL(RENDER_RING_BASE)),
-		NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE)),
-		v155SavedRcsCtl);
-	SYSLOG("ngreen", "V53 resetGfxEng PRE: BCS CTL=0x%x HEAD=0x%x TAIL=0x%x",
-		NGreen::callback->readReg32(RING_CTL(BLT_RING_BASE)),
-		NGreen::callback->readReg32(RING_HEAD(BLT_RING_BASE)),
-		NGreen::callback->readReg32(RING_TAIL(BLT_RING_BASE)));
-	SYSLOG("ngreen", "V53 resetGfxEng PRE: ERROR_GEN6=0x%x MI_MODE_RCS=0x%x MI_MODE_BCS=0x%x",
-		NGreen::callback->readReg32(ERROR_GEN6),
-		NGreen::callback->readReg32(RING_MI_MODE(RENDER_RING_BASE)),
-		NGreen::callback->readReg32(RING_MI_MODE(BLT_RING_BASE)));
-
-	// V161: EU/context-image state snapshot — every reset call.
-	// These six registers are restored from the context image by hardware DMA on each
-	// context load. If the TGL image writes values incompatible with RPL silicon, they
-	// will show up here with the wrong bits set and point to what needs patching.
-	//   0x206c = INSTDONE_1        — EU thread dispatcher / slice done bits (all 1 = idle)
-	//   0x2090 = COMMON_SLICE_INSTDONE — fixed-function and EU execution units (all 1 = idle)
-	//   0x20a0 = FF_THREAD_MODE    — fixed-function thread dispatch mode
-	//   0x20e0 = FF_SLICE_CS_CHICKEN1 — bit 14 = PERCTX_PREEMPT_CTRL (TGL enables; RPL hangs)
-	//   0x2580 = CS_CHICKEN1       — bits [3:1] = GPGPU preemption level
-	//   0x229c = GFX_MODE (RCS)    — bit 3 = GFX_DISABLE_LEGACY_MODE; upper 16 = mask
-	SYSLOG("ngreen", "V161[%d]: INSTDONE_1=0x%08x SLICE_INSTDONE=0x%08x FF_THREAD_MODE=0x%08x",
-		v63ResetCount,
-		NGreen::callback->readReg32(0x206c),
-		NGreen::callback->readReg32(0x2090),
-		NGreen::callback->readReg32(GEN7_FF_THREAD_MODE));
-	SYSLOG("ngreen", "V161[%d]: FF_SLICE_CS_CHICKEN1=0x%08x CS_CHICKEN1=0x%08x GFX_MODE=0x%08x",
-		v63ResetCount,
-		NGreen::callback->readReg32(GEN7_FF_SLICE_CS_CHICKEN1),
-		NGreen::callback->readReg32(GEN8_CS_CHICKEN1),
-		NGreen::callback->readReg32(0x229c));
-
-	auto ret=FunctionCast(resetGraphicsEngine, callback->oresetGraphicsEngine)(that,param_1);
-	
-	// V53: Snapshot AFTER — did original reset change anything?
-	SYSLOG("ngreen", "V53 resetGfxEng POST: ret=%lu RCS CTL=0x%x HEAD=0x%x TAIL=0x%x",
-		ret,
-		NGreen::callback->readReg32(RING_CTL(RENDER_RING_BASE)),
-		NGreen::callback->readReg32(RING_HEAD(RENDER_RING_BASE)),
-		NGreen::callback->readReg32(RING_TAIL(RENDER_RING_BASE)));
-	SYSLOG("ngreen", "V53 resetGfxEng POST: BCS CTL=0x%x ERROR_GEN6=0x%x",
-		NGreen::callback->readReg32(RING_CTL(BLT_RING_BASE)),
-		NGreen::callback->readReg32(ERROR_GEN6));
-	// V161 POST: same six registers after reset — shows what the original reset restores/clears.
-	SYSLOG("ngreen", "V161[%d]post: INSTDONE_1=0x%08x SLICE_INSTDONE=0x%08x FF_THREAD_MODE=0x%08x",
-		v63ResetCount,
-		NGreen::callback->readReg32(0x206c),
-		NGreen::callback->readReg32(0x2090),
-		NGreen::callback->readReg32(GEN7_FF_THREAD_MODE));
-	SYSLOG("ngreen", "V161[%d]post: FF_SLICE_CS_CHICKEN1=0x%08x CS_CHICKEN1=0x%08x GFX_MODE=0x%08x",
-		v63ResetCount,
-		NGreen::callback->readReg32(GEN7_FF_SLICE_CS_CHICKEN1),
-		NGreen::callback->readReg32(GEN8_CS_CHICKEN1),
-		NGreen::callback->readReg32(0x229c));
-
-	// V162: After every reset on RPL, forcibly clear PERCTX_PREEMPT_CTRL (bit 14
-	// of FF_SLICE_CS_CHICKEN1).  The TGL execlist context image has this bit set
-	// as a TGL-only chicken bit; on RPL it causes the EU thread dispatcher to hang
-	// permanently on the first Metal render submission.  The masked-write format
-	// (upper 16 = mask, lower 16 = value) clears the bit without touching others.
-	if (!NGreen::callback->isRealTGL) {
-		NGreen::callback->writeReg32(GEN7_FF_SLICE_CS_CHICKEN1,
-			(GEN9_FFSC_PERCTX_PREEMPT_CTRL << 16) | 0);  // 0x40000000: mask bit 14 → 0
-		SYSLOG("ngreen", "V162[%d]: cleared PERCTX_PREEMPT_CTRL, FF_SLICE_CS_CHICKEN1 now=0x%08x",
-			v63ResetCount, NGreen::callback->readReg32(GEN7_FF_SLICE_CS_CHICKEN1));
-	}
-
-	// V71: Post-reset error suppression — Apple's resetGraphicsEngine may unmask EMR
-	// or generate new errors during reset. Re-mask and clear immediately after.
-	{
-		uint32_t postErr = NGreen::callback->readReg32(ERROR_GEN6);
-		if (postErr)
-			NGreen::callback->writeReg32(ERROR_GEN6, 0x0);
-		NGreen::callback->writeReg32(RING_EMR(RENDER_RING_BASE), 0xFFFFFFFF);
-		NGreen::callback->writeReg32(RING_EMR(BLT_RING_BASE), 0xFFFFFFFF);
-		if (postErr)
-			SYSLOG("ngreen", "V71: resetGfxEng post-clear ERR=0x%x", postErr);
-	}
-
-	// V153: RPL-only reset fallback.
-	// We are seeing resetGraphicsEngine return 1025 in a tight loop even when
-	// both rings are already quiescent and ERROR_GEN6 is clean. That loop alone
-	// is enough to starve WindowServer and trigger watchdog timeout.
-	// Preserve real TGL behavior; on spoofed RPL only, treat this specific
-	// quiescent 1025 as success so callers can progress beyond reset storm.
-	if (!NGreen::callback->isRealTGL && ret == 1025) {
-		// V164: Detect EXECLIST_STATUS active-with-empty-ring ("ghost context") on RPL.
-		// If EXECLIST_STATUS bit 0 is set while HEAD==TAIL, the ExecList engine believes
-		// a context is executing but the ring has no commands. This produces a stuck
-		// INSTDONE (e.g. 0xffdffffe — bits 0 and 21 low) that neither V162 nor V155 can
-		// resolve, because the ghost EL0 context continuously reloads bad state from the
-		// context image. The only remedy is a GEN6_GDRST render-domain reset to forcibly
-		// evict it — same mechanism as Linux i915 gen6_hw_domain_reset.
-		// Fires only on ret==1025 calls where the condition is detected, capped at 8 per boot.
+		// V71 PRE: clear ERROR_GEN6 and mask EMR before stop
 		{
-			static int v164GdrstCount = 0;
-			uint32_t v164Head   = NGreen::callback->readReg32(RING_HEAD(RENDER_RING_BASE));
-			uint32_t v164Tail   = NGreen::callback->readReg32(RING_TAIL(RENDER_RING_BASE));
+			uint32_t preErr = NGreen::callback->readReg32(ERROR_GEN6);
+			if (preErr) {
+				NGreen::callback->writeReg32(ERROR_GEN6, 0x0);
+				SYSLOG("ngreen", "V71[%d]: pre-stop ERR=0x%x cleared", v63ResetCount, preErr);
+			}
+			NGreen::callback->writeReg32(RING_EMR(RENDER_RING_BASE), 0xFFFFFFFF);
+			NGreen::callback->writeReg32(RING_EMR(BLT_RING_BASE),    0xFFFFFFFF);
+		}
+
+		// V152: drain and disable BCS ring before stop so Apple sees a clean BCS state
+		{
+			uint32_t bcsTail = NGreen::callback->readReg32(RING_TAIL(BLT_RING_BASE));
+			uint32_t bcsHead = NGreen::callback->readReg32(RING_HEAD(BLT_RING_BASE));
+			uint32_t bcsCtl  = NGreen::callback->readReg32(RING_CTL(BLT_RING_BASE));
+			if (bcsCtl != 0 || bcsHead != bcsTail) {
+				if (bcsHead != bcsTail) {
+					NGreen::callback->writeReg32(RING_TAIL(BLT_RING_BASE), bcsHead);
+					SYSLOG("ngreen", "V152[%d]: BCS drain TAIL 0x%x→0x%x HEAD=0x%x CTL=0x%x",
+						   v63ResetCount, bcsTail, bcsHead, bcsHead, bcsCtl);
+				}
+				NGreen::callback->writeReg32(RING_CTL(BLT_RING_BASE), 0x0);
+				SYSLOG("ngreen", "V152[%d]: BCS disabled (CTL was 0x%x)", v63ResetCount, bcsCtl);
+			}
+		}
+
+		// V155: save RCS CTL while ring is still intact
+		{
+			uint32_t ctlNow = NGreen::callback->readReg32(RING_CTL(RENDER_RING_BASE));
+			if (ctlNow != 0)
+				v155SavedRcsCtl = ctlNow | 1;
+		}
+
+		// V53/V161 PRE: snapshot ring and EU state before stop
+		uint32_t rcsHead  = NGreen::callback->readReg32(RING_HEAD(RENDER_RING_BASE));
+		uint32_t rcsTail  = NGreen::callback->readReg32(RING_TAIL(RENDER_RING_BASE));
+		uint32_t rcsStart = NGreen::callback->readReg32(RING_START(RENDER_RING_BASE));
+		SYSLOG("ngreen", "V53[%d] stop PRE: RCS CTL=0x%x HEAD=0x%x TAIL=0x%x START=0x%x EXEC=0x%x",
+			v63ResetCount,
+			NGreen::callback->readReg32(RING_CTL(RENDER_RING_BASE)),
+			rcsHead, rcsTail, rcsStart,
+			NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE)));
+		SYSLOG("ngreen", "V161[%d] stop PRE: INSTDONE_1=0x%08x SLICE_DONE=0x%08x CS_CHKN1=0x%08x FF_CHKN1=0x%08x",
+			v63ResetCount,
+			NGreen::callback->readReg32(0x206c),
+			NGreen::callback->readReg32(0x2090),
+			NGreen::callback->readReg32(GEN8_CS_CHICKEN1),
+			NGreen::callback->readReg32(GEN7_FF_SLICE_CS_CHICKEN1));
+
+		// V505: dump ring preamble contents — ring still running at this point
+		if (v505Count < 3 && rcsStart) {
+			uint32_t ringPage = rcsStart >> 12;
+			uint32_t rpteHi   = NGreen::callback->readReg32(GGTT_PTE_HI(ringPage));
+			uint32_t rpteLo   = NGreen::callback->readReg32(GGTT_PTE_LO(ringPage));
+			if (rpteLo & 1) {
+				v505Count++;
+				uint64_t physBase = ((uint64_t)rpteHi << 32) | (rpteLo & 0xFFFFF000u);
+				SYSLOG("ngreen", "V505[%d]: ring phys=0x%llx HEAD=0x%x TAIL=0x%x — 32 dwords:",
+					   v505Count, (unsigned long long)physBase, rcsHead, rcsTail);
+				for (int i = 0; i < 32; i++) {
+					uint32_t dw = IOMappedRead32(physBase + (uint64_t)(i * 4));
+					SYSLOG("ngreen", "V505[%d]:  [%02d] +0x%02x = 0x%08x", v505Count, i, i * 4, dw);
+				}
+			} else {
+				SYSLOG("ngreen", "V505: PTE invalid rpteHi=0x%x rpteLo=0x%x", rpteHi, rpteLo);
+			}
+		}
+
+		// V164: fire GDRST if ghost context detected (EXEC active, ring empty)
+		{
 			uint32_t execStatus = NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE));
-			const bool ghostActive = (execStatus & 1) && (v164Head == v164Tail);
-			SYSLOG("ngreen", "V164[%d]: EXECLIST_STATUS=0x%x ghostActive=%d (gdrstsSoFar=%d)",
-					v63ResetCount, execStatus, ghostActive, v164GdrstCount);
+			const bool ghostActive = (execStatus & 1) && (rcsHead == rcsTail);
 			if (ghostActive && v164GdrstCount < 8) {
 				v164GdrstCount++;
 				NGreen::callback->writeReg32(GEN6_GDRST, GEN6_GRDOM_RENDER);
-				// Poll for self-clear — hardware sets bit while reset is in progress,
-				// clears it when done. Typically <1 ms; cap at 1000 polls.
 				uint32_t gdrstVal = GEN6_GRDOM_RENDER;
 				int pollCount = 0;
 				while ((gdrstVal & GEN6_GRDOM_RENDER) && pollCount < 1000) {
 					gdrstVal = NGreen::callback->readReg32(GEN6_GDRST);
 					pollCount++;
 				}
-				uint32_t execAfter = NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE));
-				SYSLOG("ngreen", "V164[%d]: GDRST fired #%d poll=%d gdrst=0x%x EXEC 0x%x->0x%x",
-						v63ResetCount, v164GdrstCount, pollCount, gdrstVal, execStatus, execAfter);
+				SYSLOG("ngreen", "V164[%d]: GDRST #%d poll=%d gdrst=0x%x EXEC 0x%x->0x%x",
+					v63ResetCount, v164GdrstCount, pollCount, gdrstVal,
+					execStatus, NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE)));
 			}
-		}
-
-		uint32_t rcsHead = NGreen::callback->readReg32(RING_HEAD(RENDER_RING_BASE));
-		uint32_t rcsTail = NGreen::callback->readReg32(RING_TAIL(RENDER_RING_BASE));
-		uint32_t err = NGreen::callback->readReg32(ERROR_GEN6);
-
-		// V156: Drop BCS quiescent requirement — irrelevant since V152 handles BCS.
-		// V157: Drop rcsCtl==0 check. Hardware auto-restores RCS CTL to 0x7001 within
-		// microseconds after the original reset (likely via execlist engine re-enabling).
-		// By the time V153 reads CTL it is already 0x7001, making rcsCtl==0 always false
-		// and preventing V153 from ever firing in the first ~15 calls. Only HEAD==TAIL
-		// (empty ring queue) and err==0 are needed to confirm the ring is quiescent.
-		const bool rcsQuiescent = (rcsHead == rcsTail);
-		if (rcsQuiescent && err == 0) {
-			v154ConsecQuiescentFails++;
-
-			// V155: re-enable the RCS ring — GDRST (and the original reset) leave CTL=0.
-			// Use | 1 to force RING_ENABLE bit — hardware clears it on readback, so
-			// v155SavedRcsCtl may already have been updated to 0x7000; we must always
-			// write with bit 0 set for the ring to actually start executing commands.
-			if (v155SavedRcsCtl != 0) {
-				NGreen::callback->writeReg32(RING_CTL(RENDER_RING_BASE), v155SavedRcsCtl | 1);
-			}
-			v158_drainCSB();
-			SYSLOG("ngreen", "V153[%d]: coercing reset ret=1025 -> 0 (rcs-quiescent, consec=%d, restored CTL=0x%x)",
-				   v63ResetCount, v154ConsecQuiescentFails, v155SavedRcsCtl | 1);
-			// V162: Clear PERCTX_PREEMPT_CTRL — TGL context image sets bit 14;
-			// RPL EU thread dispatcher freezes with this bit enabled.
-			NGreen::callback->writeReg32(GEN7_FF_SLICE_CS_CHICKEN1,
-				(GEN9_FFSC_PERCTX_PREEMPT_CTRL << 16) | 0);
-			return 0;
 		}
 	}
-	// Non-quiescent failure or genuine success — reset circuit-breaker counter
-	v154ConsecQuiescentFails = 0;
+
+	unsigned long ret = FunctionCast(stopGraphicsEngine, callback->ostopGraphicsEngine)(that);
+
+	if (!NGreen::callback->isRealTGL) {
+		// V53/V161 POST: snapshot after stop
+		SYSLOG("ngreen", "V53[%d] stop POST: RCS CTL=0x%x HEAD=0x%x TAIL=0x%x EXEC=0x%x",
+			v63ResetCount,
+			NGreen::callback->readReg32(RING_CTL(RENDER_RING_BASE)),
+			NGreen::callback->readReg32(RING_HEAD(RENDER_RING_BASE)),
+			NGreen::callback->readReg32(RING_TAIL(RENDER_RING_BASE)),
+			NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE)));
+
+		// V162: clear PERCTX_PREEMPT_CTRL after stop — TGL context image sets bit 14, RPL hangs
+		NGreen::callback->writeReg32(GEN7_FF_SLICE_CS_CHICKEN1,
+				(GEN9_FFSC_PERCTX_PREEMPT_CTRL << 16) | 0);
+
+		// V155: restore RCS ring enable so Apple's startGraphicsEngine can take over
+		if (v155SavedRcsCtl != 0)
+			NGreen::callback->writeReg32(RING_CTL(RENDER_RING_BASE), v155SavedRcsCtl | 1);
+
+		// V71 POST: clear any errors generated by stop + drain CSB
+		{
+			uint32_t postErr = NGreen::callback->readReg32(ERROR_GEN6);
+			if (postErr) {
+				NGreen::callback->writeReg32(ERROR_GEN6, 0x0);
+				SYSLOG("ngreen", "V71[%d]: post-stop ERR=0x%x cleared", v63ResetCount, postErr);
+			}
+			NGreen::callback->writeReg32(RING_EMR(RENDER_RING_BASE), 0xFFFFFFFF);
+			NGreen::callback->writeReg32(RING_EMR(BLT_RING_BASE),    0xFFFFFFFF);
+			// Drain CSB: advance read pointer to write pointer
+			uint32_t csbReg   = NGreen::callback->readReg32(RING_CONTEXT_STATUS_PTR(RENDER_RING_BASE));
+			uint32_t csbWrite = (csbReg >> 8) & 0xff;
+			uint32_t csbRead  = csbReg & 0xff;
+			if (csbRead != csbWrite)
+				NGreen::callback->writeReg32(RING_CONTEXT_STATUS_PTR(RENDER_RING_BASE),
+											 (csbWrite << 8) | csbWrite);
+			SYSLOG("ngreen", "V160[%d]: CSB rp %d→%d EXEC=0x%x FF_CS_CHKN1=0x%08x",
+				v63ResetCount, csbRead, csbWrite,
+				NGreen::callback->readReg32(RING_EXECLIST_STATUS(RENDER_RING_BASE)),
+				NGreen::callback->readReg32(GEN7_FF_SLICE_CS_CHICKEN1));
+		}
+	}
 	return ret;
 }
 
@@ -9455,6 +9303,6 @@ void Gen11::endReset(void *that)
 //void blit3d_initialize_scratch_space(IGAccelSysMemory *param_1)
 //void __thiscall IGHardwareBlit3DContext::initialize(IGHardwareBlit3DContext *this)
 //ulong __thiscall IntelAccelerator::startGraphicsEngine(IntelAccelerator *this)
-//ulong __thiscall IGHardwareRingBuffer::resetGraphicsEngine(IGHardwareRingBuffer *this,IGHardwareContext *param_1)
+//undefined8 __thiscall IntelAccelerator::stopGraphicsEngine(IntelAccelerator *this)
 //void __thiscall IGAccelSegmentResourceList::initBlitUsage(IGAccelSegmentResourceList *this)
 //ulong IntelAccelerator::submitBlit (blit3d_params_t *param_1,IGVector *param_2,IGAccelTask *param_3,bool param_4)

@@ -1944,6 +1944,9 @@ private:
 	static unsigned long resetGraphicsEngine(void *that,void *param_1);  // GT engine reset
 	mach_vm_address_t oresetGraphicsEngine {};
 
+	static unsigned long stopGraphicsEngine(void *that);    // V505: dump ring preamble before ring is stopped
+	mach_vm_address_t ostopGraphicsEngine {};
+
 	static unsigned long startGraphicsEngine(void *that);  // V163: clear PERCTX_PREEMPT_CTRL before first context snapshot
 	mach_vm_address_t ostartGraphicsEngine {};
 

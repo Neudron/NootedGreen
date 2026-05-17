@@ -369,21 +369,27 @@ static IOReturn wrapWaitForStamp(void *that, int32_t channel, unsigned int stamp
 	return ret;
 }
 
-// V500: IOAccelLegacySurface::set_id_mode(uint32_t id, uint32_t mode) diagnostic hook.
-// Bad-bits mask: 0xff8073c0. Any mode with those bits set returns kIOReturnUnsupported.
-// Logs (id, mode, bad_bits) whenever a failure fires. Read-only — returns original result.
+// V500: IOAccelLegacySurface::set_id_mode(uint32_t id, uint32_t mode) active fix.
+// Hardware rejects mode bits covered by 0xff8073c0 with kIOReturnUnsupported.
+// On non-TGL (RPL-P spoofed as TGL), strip those bits before the call so the
+// GPU task gets a valid scheduling mode instead of silently failing.
 static mach_vm_address_t orgSetIdMode = 0;
 static IOReturn wrapSetIdMode(void *that, uint32_t id, uint32_t mode) {
-    IOReturn ret = FunctionCast(wrapSetIdMode, orgSetIdMode)(that, id, mode);
-    if (ret != kIOReturnSuccess) {
-        uint32_t badBits  = mode & 0xff8073c0u;
-        uint32_t goodBits = mode & 0x007f8c3fu;
-        static int v500Count = 0;
-        if (v500Count < 32) {
-            ++v500Count;
-            SYSLOG("ngreen", "V500[%d]: set_id_mode FAILED ret=0x%x id=0x%x mode=0x%x "
-                   "bad_bits=0x%x good_bits=0x%x", v500Count, ret, id, mode, badBits, goodBits);
-        }
+    uint32_t patchedMode = mode;
+    if (NGreen::callback && !NGreen::callback->getIsRealTGL())
+        patchedMode = mode & ~0xff8073c0u;  // strip TGL-only preemption/mode bits
+
+    IOReturn ret = FunctionCast(wrapSetIdMode, orgSetIdMode)(that, id, patchedMode);
+
+    static int v500Count = 0;
+    if (v500Count < 32) {
+        ++v500Count;
+        if (patchedMode != mode)
+            SYSLOG("ngreen", "V500[%d]: set_id_mode stripped 0x%x→0x%x id=0x%x ret=0x%x",
+                   v500Count, mode, patchedMode, id, ret);
+        else if (ret != kIOReturnSuccess)
+            SYSLOG("ngreen", "V500[%d]: set_id_mode FAILED ret=0x%x id=0x%x mode=0x%x",
+                   v500Count, ret, id, mode);
     }
     return ret;
 }

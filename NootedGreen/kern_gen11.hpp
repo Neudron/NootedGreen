@@ -1369,7 +1369,7 @@ private:
 	mach_vm_address_t orgPmNotifyWrapper {};
 	
 	// ── Accelerator start & forcewake ──
-	static bool start(void *that,void  *param_1);   // IntelAccelerator::start wrapper
+	static unsigned long start(void *that,void  *param_1);   // IntelAccelerator::start wrapper
 	static void v54IrqWatchdog(thread_call_param_t, thread_call_param_t);  // V54: IRQ watchdog
 	static void v60GpuHealthMonitor(thread_call_param_t, thread_call_param_t);  // V60: active ERROR_GEN6 suppression + monitor
 	static void v71EmrEnforcer(thread_call_param_t, thread_call_param_t);  // V71: high-freq EMR mask + ERROR clear (50ms)
@@ -1388,7 +1388,7 @@ private:
 	static void *igAccelTaskWithOptions(void *that);  // V132: cache successful task allocations for null-task fallback
 	mach_vm_address_t oigAccelTaskWithOptions {};
 	
-	static uint32_t submitBlit(void *that, void *param_1, void *param_2, void *param_3, bool param_4);
+	static unsigned long submitBlit(void *that, void *param_1, void *param_2, void *param_3, bool param_4);
 	mach_vm_address_t osubmitBlit {};
 	
 	static bool patchRCSCheck(mach_vm_address_t& start);  // bypass RCS engine check
@@ -1816,14 +1816,14 @@ private:
 	mach_vm_address_t oIGHardwareBlit3DContextoperatornew {};
 	
 	
-	static uint8_t blit3d_init_ctx(void *that);
+	static uint64_t blit3d_init_ctx(void *that);
 	mach_vm_address_t oblit3d_init_ctx {};
 	
 	static void blit3d_initialize_scratch_space(void *that);
 	mach_vm_address_t oblit3d_initialize_scratch_space {};
 
 	// Extended GPU context init — sets up additional context state (PPGTT, aux tables)
-	static uint8_t	IGHardwareExtendedContextinitWithOptions
+	static uint64_t IGHardwareExtendedContextinitWithOptions
 			  (void *that,void *param_1,
 			   void *param_2);
 	mach_vm_address_t oIGHardwareExtendedContextinitWithOptions {};
@@ -1944,7 +1944,7 @@ private:
 	static unsigned long resetGraphicsEngine(void *that,void *param_1);  // GT engine reset
 	mach_vm_address_t oresetGraphicsEngine {};
 
-	static bool startGraphicsEngine(void *that);  // V163: clear PERCTX_PREEMPT_CTRL before first context snapshot
+	static unsigned long startGraphicsEngine(void *that);  // V163: clear PERCTX_PREEMPT_CTRL before first context snapshot
 	mach_vm_address_t ostartGraphicsEngine {};
 
 	static void populateResetRegisterList(void *that);  // V164: clear bit 14 before snapshot into replay list

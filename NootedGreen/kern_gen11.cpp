@@ -3842,7 +3842,10 @@ int Gen11::wrapHwSetupMemory(AppleIntel::AppleIntelBaseController *that, AppleIn
 
 // HW hooks
 
-bool Gen11::start(void *that,void  *param_1)
+static void v44ScheduleBundleLog(void *accelInstance, unsigned delayMs);
+static void v45ScheduleDelayedCheck(void *accelInstance, unsigned delayMs);
+
+unsigned long Gen11::start(void *that,void  *param_1)
 {
 	// V44: Configurable scheduler type.
 	// populateAccelConfig reads "GraphicsSchedulerSelect" from the IORegistry.
@@ -4116,7 +4119,7 @@ bool Gen11::start(void *that,void  *param_1)
 
 	// V221: Signal waitForStamp hook that the GFX interrupt handler is now installed.
 	Gen11::gGfxAccelStartDone = true;
-	SYSLOG("ngreen", "V221: GFX start() complete — gGfxAccelStartDone=true ret=%d", ret);
+	SYSLOG("ngreen", "V221: GFX start() complete — gGfxAccelStartDone=true ret=%lu", ret);
 
 	// V65: IMMEDIATELY after original start() returns, re-enable RCS0 interrupts.
 	// Apple's init code may have overwritten our pre-start settings.
@@ -4902,19 +4905,21 @@ void Gen11::populateResetRegisterList(void *that)
 	}
 	// V504: patch reset register list before context image bakes
 	// Walk IGVector: each entry = {uint32_t mmio_addr, uint32_t value, char name[0x1c]}
-	static bool v504Patched = false;
-	if (!v504Patched && !NGreen::callback->isRealTGL) {
-		v504Patched = true;
+	if (!NGreen::callback->isRealTGL) {
 		auto *accel = reinterpret_cast<AppleIntel::IntelAccelerator*>(that);
 		uint64_t count = accel->fResetRegCount;
 		uint8_t *data  = reinterpret_cast<uint8_t*>(accel->fResetRegData);
+		static int v504CallCount = 0;
+		++v504CallCount;
+		SYSLOG("ngreen", "V504[%d]: IGVector count=%llu data=%p", v504CallCount,
+			   (unsigned long long)count, data);
 		for (uint64_t i = 0; i < count; i++) {
 			uint32_t *entry = reinterpret_cast<uint32_t*>(data + i * 0x24);
 			uint32_t  addr  = entry[0];
 			// CS_DEBUG_MODE1: clear bits 0+4 (TGL replay mode bits, stall CS on RPL-P)
-			if (addr == 0x20ec) { entry[1] = 0x00000000; SYSLOG("ngreen", "V504: patched CS_DEBUG_MODE1 → 0"); }
+			if (addr == 0x20ec) { entry[1] = 0x00000000; SYSLOG("ngreen", "V504[%d]: patched CS_DEBUG_MODE1 → 0", v504CallCount); }
 			// CS_CHICKEN1: keep bit1 only (threadgroup preemption), clear bit0 (TGL-only command level)
-			if (addr == 0x2580) { entry[1] = 0x00000002; SYSLOG("ngreen", "V504: patched CS_CHICKEN1 → 0x2"); }
+			if (addr == 0x2580) { entry[1] = 0x00000002; SYSLOG("ngreen", "V504[%d]: patched CS_CHICKEN1 → 0x2", v504CallCount); }
 		}
 	}
 }
@@ -5147,7 +5152,7 @@ void * Gen11::getBlit3DContext(void *that,bool param_1)
 	return nullptr;
 }
 
-uint8_t Gen11::blit3d_init_ctx(void *that)
+uint64_t Gen11::blit3d_init_ctx(void *that)
 {
 	// V128 rollback: allow original Blit3D context init on spoofed paths.
 	return FunctionCast(blit3d_init_ctx, callback->oblit3d_init_ctx)(that);
@@ -5312,10 +5317,10 @@ void Gen11::IGHardwareBlit3DContextinitialize(void *that)
 		return;
 	}
 
-	uint8_t rc = FunctionCast(blit3d_init_ctx, callback->oblit3d_init_ctx)(that);
+	uint64_t rc = FunctionCast(blit3d_init_ctx, callback->oblit3d_init_ctx)(that);
 	if (v69Verbose)
-		SYSLOG("ngreen", "V148: blit3d_init_ctx returned %u, ctx+0xb8=0x%llx ctx+0xd8=%p ctx+0xe0=%p",
-			   static_cast<unsigned>(rc),
+		SYSLOG("ngreen", "V148: blit3d_init_ctx returned %llu, ctx+0xb8=0x%llx ctx+0xd8=%p ctx+0xe0=%p",
+			   (unsigned long long)rc,
 			   (unsigned long long)getMember<uint64_t>(that, 0xb8),
 			   mappedBufPtr,
 			   getMember<void *>(that, 0xe0));
@@ -5334,15 +5339,15 @@ void Gen11::IGHardwareBlit3DContextinitialize(void *that)
 // Fix: call the original (must keep its side-effects), then immediately clear bit 14
 // using a masked write (upper 16 = mask, lower 16 = 0). This fires before any context
 // is ever submitted, so the DMA buffer snapshot captures 0x0000 instead of 0x4000.
-bool Gen11::startGraphicsEngine(void *that)
+unsigned long Gen11::startGraphicsEngine(void *that)
 {
-	bool ret = FunctionCast(startGraphicsEngine, callback->ostartGraphicsEngine)(that);
+	unsigned long ret = FunctionCast(startGraphicsEngine, callback->ostartGraphicsEngine)(that);
 
 	if (!NGreen::callback->isRealTGL) {
 		// Masked clear: mask=bit14, value=0 → 0x40000000
 		NGreen::callback->writeReg32(GEN7_FF_SLICE_CS_CHICKEN1,
 			(GEN9_FFSC_PERCTX_PREEMPT_CTRL << 16) | 0);
-		SYSLOG("ngreen", "V163: startGraphicsEngine post-clear FF_SLICE_CS_CHICKEN1=0x%08x (ret=%d)",
+		SYSLOG("ngreen", "V163: startGraphicsEngine post-clear FF_SLICE_CS_CHICKEN1=0x%08x (ret=%lu)",
 			NGreen::callback->readReg32(GEN7_FF_SLICE_CS_CHICKEN1), ret);
 	}
 
@@ -5684,7 +5689,7 @@ void *  Gen11::IGHardwareBlit3DContextoperatornew(unsigned long size)
 	return ret;
 }
 
-uint8_t  Gen11::IGHardwareExtendedContextinitWithOptions(void *that,void *param_1,void *param_2)
+uint64_t Gen11::IGHardwareExtendedContextinitWithOptions(void *that,void *param_1,void *param_2)
 {
 	if (!callback->oIGHardwareExtendedContextinitWithOptions) {
 		static bool v136ExtInitLogged = false;
@@ -5706,7 +5711,7 @@ uint8_t  Gen11::IGHardwareExtendedContextinitWithOptions(void *that,void *param_
 		SYSLOG("ngreen", "V502: initWithOptions ExtCtxParams=%p +0x10=0x%llx +0x18=0x%llx (0=simple,!=0=GPU-cmd)",
 			   param_2, (unsigned long long)p2f10, (unsigned long long)p2f18);
 	}
-	uint8_t ret = FunctionCast(IGHardwareExtendedContextinitWithOptions, callback->oIGHardwareExtendedContextinitWithOptions)(that,param_1,param_2);
+	uint64_t ret = FunctionCast(IGHardwareExtendedContextinitWithOptions, callback->oIGHardwareExtendedContextinitWithOptions)(that,param_1,param_2);
 	void *b8post = getMember<void *>(that, 0xb8);
 	// V115 REMOVED: V115 suppressed initWithOptions to prevent MCE from GGTT[0]→stolen mem.
 	// V116 now remaps GGTT[0] to a safe dummy page, so the MCE can't happen.
@@ -5715,8 +5720,8 @@ uint8_t  Gen11::IGHardwareExtendedContextinitWithOptions(void *that,void *param_
 	static int v501Count = 0;
 	if (v501Count < 8) {
 		v501Count++;
-		SYSLOG("ngreen", "V501[%d]: initWithOptions(%p) ret=%u b8_pre=%p b8_post=%p p1=%p p2=%p",
-			   v501Count, that, ret, b8pre, b8post, param_1, param_2);
+		SYSLOG("ngreen", "V501[%d]: initWithOptions(%p) ret=%llu b8_pre=%p b8_post=%p p1=%p p2=%p",
+			   v501Count, that, (unsigned long long)ret, b8pre, b8post, param_1, param_2);
 	}
 	return ret;
 	
@@ -5894,7 +5899,7 @@ void  Gen11::initBlitUsage(void *that)
 	FunctionCast(initBlitUsage, callback->oinitBlitUsage)(that);
 }
 
-uint32_t Gen11::submitBlit(void *that, void *param_1, void *param_2, void *param_3, bool param_4) {
+unsigned long Gen11::submitBlit(void *that, void *param_1, void *param_2, void *param_3, bool param_4) {
 	// V186: For spoofed non-TGL, if V142 is configured to bypass submitBlit,
 	// return before any task/context touching logic. The V149/V171 path writes
 	// task+0x298 and can poison task lifetime on some boots, later crashing in
@@ -6115,7 +6120,7 @@ uint32_t Gen11::submitBlit(void *that, void *param_1, void *param_2, void *param
 		}
 		if (!NGreen::callback->isRealTGL)
 			return 0;
-		return static_cast<uint32_t>(kIOReturnUnsupported);
+		return static_cast<unsigned long>(kIOReturnUnsupported);
 	}
 
 	return FunctionCast(submitBlit, callback->osubmitBlit)(that, param_1, param_2, param_3, param_4);

@@ -1944,7 +1944,8 @@ private:
 	static unsigned long resetGraphicsEngine(void *that,void *param_1);  // GT engine reset
 	mach_vm_address_t oresetGraphicsEngine {};
 
-	static void applyPreEngineWorkarounds(int callCount);   // GT WAs + error clear, called from start and stop
+	static void applyPreStartEngineWorkarounds(int callCount); // only error/EMR clear — safe before ring init
+	static void applyPreStopEngineWorkarounds(int callCount);  // full GT WAs + BCS drain — before stop only
 	static unsigned long stopGraphicsEngine(void *that);    // V505: dump ring preamble before ring is stopped
 	mach_vm_address_t ostopGraphicsEngine {};
 

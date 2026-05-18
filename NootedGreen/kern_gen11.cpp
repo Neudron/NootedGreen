@@ -1738,10 +1738,12 @@ bool Gen11::paramsSurfCompare(AppleIntel::AppleIntelBaseController *that,
 	// Capture Apple's natural values BEFORE any force, for V401 logging.
 	uint32_t nat_ctl_pl1    = pl1 ? pl1->PLANE_CTL    : 0;
 	uint32_t nat_stride_pl1 = pl1 ? pl1->PLANE_STRIDE : 0;
+	uint32_t nat_surf_pl1   = pl1 ? pl1->PLANE_SURF   : 0;
 	uint32_t nat_ctl_pl2    = pl2 ? pl2->PLANE_CTL    : 0;
 	uint32_t nat_stride_pl2 = pl2 ? pl2->PLANE_STRIDE : 0;
+	uint32_t nat_surf_pl2   = pl2 ? pl2->PLANE_SURF   : 0;
 
-	if (NGreen::callback && !NGreen::callback->isRealTGL && pl2) {
+	if (!NGreen::callback->isRealTGL && pl2) {
 		pl2->PLANE_CTL    = (pl2->PLANE_CTL & ~(0x7u << 10));  // bits[12:10] = 000 → linear
 		pl2->PLANE_STRIDE = 0xa0;                               // 2560×4 / 64 = 160 = 0xa0
 	}
@@ -1791,11 +1793,13 @@ bool Gen11::paramsSurfCompare(AppleIntel::AppleIntelBaseController *that,
 	SYSLOG("ngreen", "V401[%d]: paramsSurfCompare ret=%d | "
 		   "OLD: CTL=0x%x tile=%u STRIDE=0x%x SURF=0x%x SRC=0x%x | "
 		   "NEW: CTL=0x%x tile=%u STRIDE=0x%x SURF=0x%x SRC=0x%x | "
-		   "NAT_CTL=0x%x nat_tile_pl1=%u NAT_CTL=0x%x nat_tile_pl2=%u nat_stride_pl1=0x%x nat_stride_pl2=0x%x",
+		   "NAT plold: tile_pl1=%u stride_pl1=0x%x surf_pl1=0x%x | "
+		   "NAT: plnew tile_pl2=%u stride_pl2=0x%x surf_pl2=0x%x",
 		   v401Count, ret,
 		   old_ctl, old_tile, old_stride, old_surf, old_src,
 		   new_ctl, new_tile, new_stride, new_surf, new_src,
-		   nat_ctl_pl1, nat_tile_pl1, nat_ctl_pl2, nat_tile_pl2, nat_stride_pl1, nat_stride_pl2);
+		   nat_tile_pl1, nat_tile_pl2, nat_stride_pl1, nat_surf_pl1,
+		   nat_tile_pl2, nat_stride_pl2, nat_surf_pl2);
 
 	return ret;
 }
@@ -5430,7 +5434,7 @@ unsigned long Gen11::startGraphicsEngine(void *that)
 
 	if (!NGreen::callback->isRealTGL) {
 		startCount++;
-		applyPreEngineWorkarounds(startCount);
+		applyPreStartEngineWorkarounds(startCount);
 	}
 
 	unsigned long ret = FunctionCast(startGraphicsEngine, callback->ostartGraphicsEngine)(that);
@@ -5446,10 +5450,26 @@ unsigned long Gen11::startGraphicsEngine(void *that)
 	return ret;
 }
 
-// GT workarounds + pre-engine error clearing applied before every engine start/reset.
-// Called from both startGraphicsEngine (covers Apple's skip-stop path on first init)
-// and stopGraphicsEngine (covers subsequent soft-reset cycles).
-void Gen11::applyPreEngineWorkarounds(int callCount)
+// Minimal pre-start safety: clear ERROR_GEN6 + mask EMR only.
+// GT chicken/clock-gate WAs must NOT run before Apple's startGraphicsEngine — they
+// interfere with ring initialization and leave CTL=0 (ring never enabled).
+// GT WAs are applied pre-stop via applyPreStopEngineWorkarounds; they persist in
+// hardware state and the context image (V504) across the stop→start cycle.
+void Gen11::applyPreStartEngineWorkarounds(int callCount)
+{
+	uint32_t preErr = NGreen::callback->readReg32(ERROR_GEN6);
+	if (preErr) {
+		NGreen::callback->writeReg32(ERROR_GEN6, 0x0);
+		SYSLOG("ngreen", "V71S[%d]: pre-start ERR=0x%x cleared", callCount, preErr);
+	}
+	NGreen::callback->writeReg32(RING_EMR(RENDER_RING_BASE), 0xFFFFFFFF);
+	NGreen::callback->writeReg32(RING_EMR(BLT_RING_BASE),    0xFFFFFFFF);
+}
+
+// Full GT workarounds + pre-engine error clearing + BCS drain.
+// Called before stopGraphicsEngine only — these WAs are safe to apply to a running
+// ring and need to be in place before the context image is captured on stop.
+void Gen11::applyPreStopEngineWorkarounds(int callCount)
 {
 	// ── GT workarounds (gen12_gt_workarounds_init / rcs_engine_wa_init) ──
 	// Applied on every reset — same set as Linux i915 for TGL/ADL-P.
@@ -5503,7 +5523,7 @@ void Gen11::applyPreEngineWorkarounds(int callCount)
 
 // stopGraphicsEngine is the real GPU reset entry point on this binary (resetGraphicsEngine
 // symbol is absent). Stop-specific: ring snapshot, V155 save/restore, V162 PERCTX clear,
-// V71 POST CSB drain. GT workarounds are in applyPreEngineWorkarounds() above.
+// V71 POST CSB drain. GT workarounds are in applyPreStopEngineWorkarounds() above.
 unsigned long Gen11::stopGraphicsEngine(void *that)
 {
 	static int   v63ResetCount            = 0;
@@ -5514,7 +5534,7 @@ unsigned long Gen11::stopGraphicsEngine(void *that)
 	if (!NGreen::callback->isRealTGL) {
 		v63ResetCount++;
 
-		applyPreEngineWorkarounds(v63ResetCount);
+		applyPreStopEngineWorkarounds(v63ResetCount);
 
 		// V155: save RCS CTL while ring is still intact
 		{

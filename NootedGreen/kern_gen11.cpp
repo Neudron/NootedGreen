@@ -5809,63 +5809,109 @@ uint64_t Gen11::IGHardwareContextinitWithOptions(void *that, void *task, const v
 	return ret;
 }
 
-// V508: Hook IGHardwareContext::withOptions (base class factory) to capture LRCA page1 content
-// immediately after initWithOptions runs.  wbinvd flushes all LLC lines to DRAM so the aperture
-// read reflects what initWithOptions actually wrote — not stale zero-initialized DRAM.
-// Also logs ctx+0xb8 (IGAccelFIFOChannel) and its first several fields to confirm the ring
-// buffer was allocated.
+// V508/V509: Hook IGHardwareContext::withOptions.
+// V508 (diagnostic, first 4 calls): logs FIFO/ring-buffer fields and page1 raw content.
+// V509 (repair, every RCS call): wbinvd flushes any stale cache write that re-stamped DW1 with
+//   0x00ffffff after initWithOptions, then writes the correct Gen12 ring context MI_LRI block to
+//   GGTT[0x19] (ExecList submission slot for page1) via aperture.  Without this, hardware sees
+//   MI_NOOP at DW1, skips all register restore, ring state is undefined, context posts IDLE.
 void *Gen11::IGHardwareContextwithOptions(void *task, const void *params, uint8_t arg)
 {
 	void *ctx = FunctionCast(IGHardwareContextwithOptions,
 	                         callback->oIGHardwareContextwithOptions)(task, params, arg);
 	auto *cb = NGreen::callback;
+	if (cb->isRealTGL || !ctx) return ctx;
+
+	uint8_t engType = getMember<uint8_t>(ctx, 0x6c);
+
+	// V508: diagnostic dump (limited to first 4 withOptions calls).
 	static int v508Count = 0;
-	if (!cb->isRealTGL && ctx && v508Count < 4) {
+	if (v508Count < 4) {
 		v508Count++;
 		void *fifo = getMember<void *>(ctx, 0xb8);
-		SYSLOG("ngreen", "V508[%d]: IGHWCtx::withOptions ctx=%p b8(fifo)=%p task=%p arg=%u",
-		       v508Count, ctx, fifo, task, (unsigned)arg);
+		SYSLOG("ngreen", "V508[%d]: ctx=%p fifo=%p arg=%u engType=%u",
+		       v508Count, ctx, fifo, (unsigned)arg, (unsigned)engType);
 		if (fifo) {
-			// Dump first 12 qwords of the FIFO channel to locate the ring buffer GGTT start
 			for (int i = 0; i < 12; i++) {
 				uint64_t v = getMember<uint64_t>(fifo, i * 8);
 				SYSLOG("ngreen", "V508[%d]: fifo[0x%02x]=0x%016llx", v508Count, i*8, (unsigned long long)v);
 			}
-			// fifo[0x18] = IGHardwareRingBuffer* — dump its first 20 qwords to find ring GGTT base.
-			// Ring GGTT is needed for V509 LRCA page1 repair (RING_START value).
 			void *ringBuf = getMember<void *>(fifo, 0x18);
 			if (ringBuf && v508Count == 1) {
-				SYSLOG("ngreen", "V508[%d]: ring_buf=%p fields:", v508Count, ringBuf);
+				SYSLOG("ngreen", "V508[%d]: ring_buf=%p:", v508Count, ringBuf);
 				for (int i = 0; i < 20; i++) {
 					uint64_t v = getMember<uint64_t>(ringBuf, i * 8);
 					SYSLOG("ngreen", "V508[%d]:   rb[0x%03x]=0x%016llx", v508Count, i*8, (unsigned long long)v);
 				}
 			}
 		}
-		// Flush all CPU caches to DRAM so the aperture (BAR2, UC) sees what initWithOptions wrote.
-		asm volatile("wbinvd" ::: "memory");
-		// LRCA is consistently at ggtt=0x18000 (page index 0x18, page1 = 0x19).
-		cb->setApertureIfNecessary();
-		uint32_t p1Lo = cb->readReg32(GGTT_PTE_LO(0x19));
-		uint32_t p1Hi = cb->readReg32(GGTT_PTE_HI(0x19));
-		SYSLOG("ngreen", "V508[%d]: LRCA pg1 PTE=%08x:%08x present=%d (after wbinvd)",
-		       v508Count, p1Hi, p1Lo, p1Lo & 1);
-		if (cb->aperturePtr && cb->apertureLen >= 0x1000 && (p1Lo & 1)) {
-			volatile uint32_t *ap = cb->aperturePtr;
-			uint32_t saveLo = cb->readReg32(GGTT_PTE_LO(0));
-			uint32_t saveHi = cb->readReg32(GGTT_PTE_HI(0));
-			cb->writeReg32(GGTT_PTE_LO(0), p1Lo);
-			cb->writeReg32(GGTT_PTE_HI(0), p1Hi);
-			cb->writeReg32(0x101008, 0x1);
-			SYSLOG("ngreen", "V508[%d]: LRCA page1 DW0..31 (post-wbinvd, post-initWithOptions):", v508Count);
-			for (int i = 0; i < 8; i++)
-				SYSLOG("ngreen", "V508[%d]: LRCA+1K[%02d-%02d] %08x %08x %08x %08x",
-				       v508Count, i*4, i*4+3, ap[i*4], ap[i*4+1], ap[i*4+2], ap[i*4+3]);
-			cb->writeReg32(GGTT_PTE_LO(0), saveLo);
-			cb->writeReg32(GGTT_PTE_HI(0), saveHi);
-			cb->writeReg32(0x101008, 0x1);
-		}
 	}
+
+	// V509 repair: RCS contexts only.
+	// The ExecList submission slot (GGTT[0x19]) is the physical page hardware reads on
+	// context-restore. It starts as GEM fill (0x00ffffff / 0x00bfbfbf) because Apple never
+	// copies the valid LRI block that restoreFromSafeImage wrote into the actual context
+	// buffer (GGTT[ctxPage1Idx]).  Fix: read context buffer → copy to submission slot.
+	if (engType != 0) return ctx;
+
+	uint32_t lrcaGpuVa = getMember<uint32_t>(ctx, 0x89) & 0xFFFFF000;
+	if (!lrcaGpuVa) { SYSLOG("ngreen", "V509: LRCA GPU VA zero"); return ctx; }
+	uint32_t ctxPage1Idx = (lrcaGpuVa >> 12) + 1;
+
+	cb->setApertureIfNecessary();
+	if (!cb->aperturePtr || cb->apertureLen < 0x1000) return ctx;
+
+	uint32_t slotLo = cb->readReg32(GGTT_PTE_LO(0x19));
+	uint32_t slotHi = cb->readReg32(GGTT_PTE_HI(0x19));
+	uint32_t ctxLo  = cb->readReg32(GGTT_PTE_LO(ctxPage1Idx));
+	uint32_t ctxHi  = cb->readReg32(GGTT_PTE_HI(ctxPage1Idx));
+	if (!(slotLo & 1) || !(ctxLo & 1)) return ctx;
+
+	asm volatile("wbinvd" ::: "memory");
+
+	volatile uint32_t *ap = cb->aperturePtr;
+	uint32_t saveLo = cb->readReg32(GGTT_PTE_LO(0));
+	uint32_t saveHi = cb->readReg32(GGTT_PTE_HI(0));
+
+	// Pass 1: read DW[0..95] from actual context buffer page1 into stack buffer.
+	uint32_t buf[96];
+	cb->writeReg32(GGTT_PTE_LO(0), ctxLo);
+	cb->writeReg32(GGTT_PTE_HI(0), ctxHi);
+	cb->writeReg32(0x101008, 0x1);
+	for (int i = 0; i < 96; i++) buf[i] = ap[i];
+
+	if (v508Count <= 4) {
+		SYSLOG("ngreen", "V508: ctx  pg1 DW0..7: %08x %08x %08x %08x  %08x %08x %08x %08x",
+		       buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+	}
+
+	// Pass 2: map submission slot, check validity, copy if needed.
+	cb->writeReg32(GGTT_PTE_LO(0), slotLo);
+	cb->writeReg32(GGTT_PTE_HI(0), slotHi);
+	cb->writeReg32(0x101008, 0x1);
+
+	if (v508Count <= 4) {
+		SYSLOG("ngreen", "V508: slot pg1 DW0..7: %08x %08x %08x %08x  %08x %08x %08x %08x",
+		       ap[0], ap[1], ap[2], ap[3], ap[4], ap[5], ap[6], ap[7]);
+	}
+
+	if ((ap[1] & 0x1F801000) != 0x11001000) {
+		if ((buf[1] & 0x1F801000) == 0x11001000) {
+			for (int i = 0; i < 96; i++) ap[i] = buf[i];
+			asm volatile("sfence" ::: "memory");
+			SYSLOG("ngreen", "V509: ctx→slot copy done  DW1=%08x DW10=%08x DW12=%08x",
+			       buf[1], buf[10], buf[12]);
+		} else {
+			SYSLOG("ngreen", "V509: both invalid  slot=%08x ctx=%08x — skipping",
+			       (uint32_t)ap[1], buf[1]);
+		}
+	} else if (v508Count <= 4) {
+		SYSLOG("ngreen", "V509: slot DW1=%08x already valid — no repair", (uint32_t)ap[1]);
+	}
+
+	cb->writeReg32(GGTT_PTE_LO(0), saveLo);
+	cb->writeReg32(GGTT_PTE_HI(0), saveHi);
+	cb->writeReg32(0x101008, 0x1);
 	return ctx;
 }
 

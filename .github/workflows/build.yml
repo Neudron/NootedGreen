@@ -1,0 +1,20 @@
+name: Build kexts
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build NootedGreen (Release, x86_64)
+        run: xcodebuild -project NootedGreen.xcodeproj -configuration Release -arch x86_64 build
+      - name: Build HookCase (Release, x86_64)
+        # upstream sets ARCHS=$(NATIVE_ARCH_ACTUAL); must force x86_64 on arm64 runners
+        run: xcodebuild -project HookCase-master/HookCase.xcodeproj -configuration Release -arch x86_64 build
+      - name: Zip HookCase
+        run: cd HookCase-master/build/Release && zip -qry HookCase-RELEASE.zip HookCase.kext
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kexts
+          path: |
+            build/Release/NootedGreen-*-RELEASE.zip
+            HookCase-master/build/Release/HookCase-RELEASE.zip

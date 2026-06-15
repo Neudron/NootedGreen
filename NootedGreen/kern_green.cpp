@@ -146,6 +146,15 @@ static void seedIGPUPropertiesEarly() {
 
 void NGreen::init() {
     callback = this;
+
+	// ── Fork (Neudron): multi-core MMIO serialization (opt-in) ──
+	// Allocate the spinlock that serializes indexed-MMIO transactions so the
+	// thread_call timers can't race the init path on multi-core. Enabled only
+	// when -ngreenmclock is present, so default boots are unchanged.
+	mmioLock = IOSimpleLockAlloc();
+	mcSerialize = checkKernelArgument("-ngreenmclock");
+	SYSLOG("ngreen", "fork: multi-core MMIO serialization %s (-ngreenmclock)",
+		   mcSerialize ? "ENABLED" : "disabled");
 	
 	lilu.onKextLoadForce(&kextAGDP);
 	/*lilu.onKextLoadForce(&kextBacklight);

@@ -40,6 +40,8 @@ class EXPORT PRODUCT_NAME : public IOService {
 	bool start(IOService *provider) override;
 };*/
 
+#include <IOKit/IOLib.h>   // fork: IOSimpleLock for multi-core MMIO serialization
+
 class NGreen {
     friend class Gen11;
 	friend class Genx;
@@ -78,12 +80,18 @@ class NGreen {
 	// Public MMIO register access (used by display link training, display merge, etc.)
 	UInt32 readReg32(unsigned long reg) {
 		if (!rmmio || !rmmioPtr) return 0;
+		bool _nglk = (this->mcSerialize && this->mmioLock != nullptr);
+		IOInterruptState _ngis = 0;
+		if (_nglk) _ngis = IOSimpleLockLockDisableInterrupt(this->mmioLock);
+		UInt32 _ngv;
 		if (reg + sizeof(uint32_t) <= this->rmmio->getLength()) {
-			return this->rmmioPtr[reg >> 2];
+			_ngv = this->rmmioPtr[reg >> 2];
 		} else {
 			this->rmmioPtr[mmPCIE_INDEX2] = reg;
-			return this->rmmioPtr[mmPCIE_DATA2];
+			_ngv = this->rmmioPtr[mmPCIE_DATA2];
 		}
+		if (_nglk) IOSimpleLockUnlockEnableInterrupt(this->mmioLock, _ngis);
+		return _ngv;
 	}
 
 	// reg = byte offset (i915 convention). rmmioPtr is uint32_t* so divide by 4.
@@ -119,22 +127,32 @@ class NGreen {
 			}
 		}
 
+		bool _nglk = (this->mcSerialize && this->mmioLock != nullptr);
+		IOInterruptState _ngis = 0;
+		if (_nglk) _ngis = IOSimpleLockLockDisableInterrupt(this->mmioLock);
 		if (reg + sizeof(uint32_t) <= this->rmmio->getLength()) {
 			this->rmmioPtr[reg >> 2] = val;
 		} else {
 			this->rmmioPtr[mmPCIE_INDEX2] = reg;
 			this->rmmioPtr[mmPCIE_DATA2] = val;
 		}
+		if (_nglk) IOSimpleLockUnlockEnableInterrupt(this->mmioLock, _ngis);
 	}
 	
 	UInt64 readReg64(unsigned long reg) {
 		if (!rmmio || !rmmioPtr) return 0;
+		bool _nglk = (this->mcSerialize && this->mmioLock != nullptr);
+		IOInterruptState _ngis = 0;
+		if (_nglk) _ngis = IOSimpleLockLockDisableInterrupt(this->mmioLock);
+		UInt64 _ngv;
 		if (reg * sizeof(uint64_t) < this->rmmio->getLength()) {
-			return this->rmmioPtr[reg];
+			_ngv = this->rmmioPtr[reg];
 		} else {
 			this->rmmioPtr[mmPCIE_INDEX2] = reg;
-			return this->rmmioPtr[mmPCIE_DATA2];
+			_ngv = this->rmmioPtr[mmPCIE_DATA2];
 		}
+		if (_nglk) IOSimpleLockUnlockEnableInterrupt(this->mmioLock, _ngis);
+		return _ngv;
 	}
 
 	void writeReg64(unsigned long reg, UInt64 val) {
@@ -163,12 +181,16 @@ class NGreen {
 				}
 			}
 		}
+		bool _nglk = (this->mcSerialize && this->mmioLock != nullptr);
+		IOInterruptState _ngis = 0;
+		if (_nglk) _ngis = IOSimpleLockLockDisableInterrupt(this->mmioLock);
 		if ((reg * sizeof(uint64_t)) < this->rmmio->getLength()) {
 			this->rmmioPtr[reg] = val;
 		} else {
 			this->rmmioPtr[mmPCIE_INDEX2] = reg;
 			this->rmmioPtr[mmPCIE_DATA2] = val;
 		}
+		if (_nglk) IOSimpleLockUnlockEnableInterrupt(this->mmioLock, _ngis);
 	}
 	
 	uint32_t intel_de_rmw(uint32_t reg, uint32_t clear, uint32_t set) {
@@ -303,6 +325,18 @@ private:
 	// Last RCS context object seen by IGHardwareContext::withOptions.
 	// V507 uses this to re-run the LRCA slot repair on each populateResetRegisterList call.
 	void *lastRCSCtx {nullptr};
+
+	// ───────── Fork (Neudron): multi-core MMIO serialization ─────────
+	// All HW register I/O funnels through readReg32/writeReg32/readReg64/
+	// writeReg64. The indexed path (PCIE_INDEX2 then PCIE_DATA2) is two
+	// posted ops; on cpus=1 nothing interleaves it, but on multi-core a
+	// thread_call timer (v71EmrEnforcer / v60GpuHealthMonitor / v54IrqWatchdog)
+	// firing on another core can slip between INDEX2 and DATA2 -> wrong
+	// register accessed -> forcewake/handshake never converges -> freeze at
+	// graphical boot. Opt-in via -ngreenmclock; default off keeps the proven
+	// single-core path byte-for-byte unchanged.
+	IOSimpleLock *mmioLock {nullptr};
+	bool mcSerialize {false};
 
 };
 

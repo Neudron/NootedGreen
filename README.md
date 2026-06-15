@@ -1,5 +1,39 @@
 # NootedGreen
 
+> ## ⑂ Fork notice (Neudron)
+>
+> This is a **fork** of [sgiammori/NootedGreen](https://github.com/sgiammori/NootedGreen),
+> maintained by **Neudron** for booting macOS Tahoe (26) on a **Lenovo V15 G4 IRU —
+> Intel Core i5-13420H (Raptor Lake-H, 4P+4E), iGPU 0xA7A8**.
+>
+> ### What this fork changes vs upstream
+> 1. **Multi-core MMIO serialization (`-ngreenmclock`, experimental, default OFF).**
+>    Adds an `IOSimpleLock` serializing the indexed-MMIO (`PCIE_INDEX2`→`PCIE_DATA2`)
+>    transactions in `readReg32/writeReg32/readReg64/writeReg64`. Off by default, so
+>    upstream/single-core behavior is byte-for-byte unchanged.
+> 2. Repro/findings notes for Tahoe + Raptor-Lake-H (below).
+>
+> ### Multi-core notes (Raptor Lake-H, Tahoe 26.5.1 / 25F80)
+> - With NootedGreen + `ngreenV142=0`, the accelerator starts and the panel is
+>   *near-clean* on a **single core** (`cpus=1`) — the only stable config so far.
+> - The multi-CPU bring-up panic (`AppleACPICPU` thread spawn, ~2.4 s) is **resolved**
+>   by enabling `CpuTopologyRebuild.kext` and **removing `-v`** from boot-args
+>   (CTR + verbose = "random boot failure" per CTR's own README). The kernel then
+>   reaches the graphical-boot stage on all cores.
+> - **But it then freezes at the Apple logo (GPU init) on multi-core; single-core never
+>   freezes.** Hypothesis: NootedGreen's `thread_call` timers (`v71EmrEnforcer` 50 ms,
+>   `v60GpuHealthMonitor`, `v54IrqWatchdog`) fire on another CPU and interleave the
+>   two-step indexed-MMIO window during init → a forcewake/handshake poll never
+>   converges. **`-ngreenmclock` is the first candidate fix** (serializes that window).
+>   Needs on-hardware testing. If the freeze persists, next suspects: lost-update RMW
+>   races in those timers, and the scheduler ret-0 spin around `submitBlit`.
+>
+> Test config (judge by whether it reaches the desktop): boot-args
+> `... -ngreentglwithgfx ... ngreenV142=0 -ngreenmclock` (no `-v`, no `cpus=1`),
+> `CpuTopologyRebuild.kext` enabled, `ProvideCurrentCpuInfo=true`, BIOS HT enabled.
+
+
+
 Lilu plugin for Intel iGPU acceleration on macOS — Haswell through Raptor Lake, via Tiger Lake driver spoofing.
 
 ## What it does
@@ -157,6 +191,7 @@ Where:
 | Arg | Purpose |
 |---|---|
 | `-NGreenDebug` | Enable NootedGreen debug logging |
+| `-ngreenmclock` | **(fork)** Serialize indexed-MMIO transactions behind a spinlock for multi-core safety. Default off; needed only when booting without `cpus=1`. |
 | `-ngreentglfb` | Load only the TGL framebuffer kext (FB-only mode). On Gen11+, this is generally NOT enough for a coherent display because per-plane DBUF allocation is HW-kext side. Diagnostic / FB-driver-isolation use only. |
 | `-ngreentglwithgfx` | Load both the TGL framebuffer AND the TGL HW accelerator kext. **Recommended for normal operation on TGL/RPL hardware.** Pairs the FB driver with `AppleIntelTGLGraphics.kext` so the watermark/DBUF programming pipeline runs at mode-set time. |
 | `-ngreentglgfx` | Load only the TGL HW kext, no FB. Diagnostic — hardware will not display anything without an FB driver. |

@@ -115,6 +115,7 @@ static constexpr DeviceList g12_adl[] = {
 
 // Gen12 — Raptor Lake
 static constexpr DeviceList g12_rpl[] = {
+    // RPL-S (desktop) — INTEL_RPLS_IDS, Linux drm/intel/pciids.h
     {0xA780, "Intel UHD Graphics 770"},
     {0xA781, "Intel UHD Graphics"},
     {0xA782, "Intel UHD Graphics"},
@@ -123,11 +124,17 @@ static constexpr DeviceList g12_rpl[] = {
     {0xA789, "Intel UHD Graphics"},
     {0xA78A, "Intel UHD Graphics"},
     {0xA78B, "Intel UHD Graphics"},
+    // RPL-P (mobile) — INTEL_RPLP_IDS
     {0xA7A0, "Intel Iris Xe Graphics"},
-    {0xA7A1, "Intel Iris Xe Graphics"},
     {0xA7A8, "Intel UHD Graphics"},
-    {0xA7A9, "Intel UHD Graphics"},
+    {0xA7AA, "Intel UHD Graphics"},
+    {0xA7AB, "Intel UHD Graphics"},
     {0xA720, "Intel UHD Graphics"},
+    // RPL-U (mobile) — INTEL_RPLU_IDS
+    {0xA7A1, "Intel Iris Xe Graphics"},
+    {0xA7A9, "Intel UHD Graphics"},
+    {0xA7AC, "Intel UHD Graphics"},
+    {0xA7AD, "Intel UHD Graphics"},
     {0xA721, "Intel UHD Graphics"},
 };
 

@@ -194,10 +194,21 @@ class NGreen {
 	}
 	
 	uint32_t intel_de_rmw(uint32_t reg, uint32_t clear, uint32_t set) {
+		// Fork P2 (2026-06-30): lock-atomic read-modify-write. The read and write
+		// were previously separately-locked, leaving a multi-core RMW race. Hold
+		// mmioLock across both; raw MMIO inline to avoid double-locking the public
+		// readReg32/writeReg32 (IOSimpleLock is not recursive).
+		if (!rmmio || !rmmioPtr) return 0;
+		bool _nglk = (this->mcSerialize && this->mmioLock != nullptr);
+		IOInterruptState _ngis = 0;
+		if (_nglk) _ngis = IOSimpleLockLockDisableInterrupt(this->mmioLock);
 		uint32_t old, val;
-		old = readReg32(reg);
+		if (reg + sizeof(uint32_t) <= this->rmmio->getLength()) old = this->rmmioPtr[reg >> 2];
+		else { this->rmmioPtr[mmPCIE_INDEX2] = reg; old = this->rmmioPtr[mmPCIE_DATA2]; }
 		val = (old & ~clear) | set;
-		writeReg32(reg, val);
+		if (reg + sizeof(uint32_t) <= this->rmmio->getLength()) this->rmmioPtr[reg >> 2] = val;
+		else { this->rmmioPtr[mmPCIE_INDEX2] = reg; this->rmmioPtr[mmPCIE_DATA2] = val; }
+		if (_nglk) IOSimpleLockUnlockEnableInterrupt(this->mmioLock, _ngis);
 		return old;
 	}
 
@@ -208,10 +219,7 @@ class NGreen {
 	
 	void whitelist_reg_ext(uint32_t reg, uint32_t flags)
 	{
-		uint32_t old;
-		old = readReg32(reg);
-		old = old | flags;
-		writeReg32(reg, old);
+		intel_de_rmw(reg, 0, flags); // Fork P2: lock-atomic RMW
 	}
 	
 	void
@@ -229,10 +237,9 @@ class NGreen {
 			set &= ~(set >> 16);
 		}
 
-		old = readReg32(reg);
-		val = (old & ~clear) | set;
-		val |= read_mask;
-		writeReg32(reg, val);
+		// Fork P2: lock-atomic RMW (was separate read/write)
+		(void)old; (void)val;
+		intel_de_rmw(reg, clear, set | read_mask);
 	}
 	
 	void wa_masked_en(uint32_t reg, uint32_t val)

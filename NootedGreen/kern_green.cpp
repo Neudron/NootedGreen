@@ -152,7 +152,9 @@ void NGreen::init() {
 	// thread_call timers can't race the init path on multi-core. Enabled only
 	// when -ngreenmclock is present, so default boots are unchanged.
 	mmioLock = IOSimpleLockAlloc();
-	mcSerialize = checkKernelArgument("-ngreenmclock");
+	/* Fork P1 (2026-06-30): default-ON for multi-core safety; -ngreennomclock opts out. */
+	mcSerialize = !checkKernelArgument("-ngreennomclock");
+	if (checkKernelArgument("-ngreenmclock")) mcSerialize = true;
 	SYSLOG("ngreen", "fork: multi-core MMIO serialization %s (-ngreenmclock)",
 		   mcSerialize ? "ENABLED" : "disabled");
 	

@@ -7184,6 +7184,22 @@ static void v45ScheduleDelayedCheck(void *accelInstance, unsigned delayMs) {
 void Gen11::v60GpuHealthMonitor(thread_call_param_t param0, thread_call_param_t param1) {
 	if (!isV60MonitorEnabled())
 		return;
+	// Fork P3 (2026-06-30, opt-in -ngreenmcdefer): defer HW polling until GFX
+	// start() completes so this health timer does not race init bring-up on
+	// multi-core. Re-arm shortly, touch no MMIO. The retain on param0 transfers
+	// to the re-armed timer (do NOT release). v54 (init IRQ enforcer) and v71
+	// (V116 GGTT MCE-preventer) are deliberately NOT gated.
+	if (checkKernelArgument("-ngreenmcdefer") && !Gen11::gGfxAccelStartDone) {
+		auto deferTimer = thread_call_allocate(v60GpuHealthMonitor, param0);
+		if (deferTimer) {
+			uint64_t deadline;
+			clock_interval_to_deadline(200, kMillisecondScale, &deadline);
+			thread_call_enter_delayed(deferTimer, deadline);
+		} else if (param0) {
+			static_cast<IOService *>(param0)->release();
+		}
+		return;
+	}
 
 	static int v60Count = 0;
 	static uint32_t v60LastHead = 0xDEAD;
